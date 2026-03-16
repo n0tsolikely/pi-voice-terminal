@@ -210,7 +210,7 @@
   })
 
   api.onPtyExit((event) => {
-    setStatus(`WSL session exited (${event.exitCode ?? 'unknown'}).`, 'error')
+    setStatus(`Shell session exited (${event.exitCode ?? 'unknown'}).`, 'error')
   })
 
   api.onError((payload) => {

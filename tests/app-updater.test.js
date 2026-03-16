@@ -15,12 +15,13 @@ test('compareVersions handles basic semver ordering', () => {
 test('checkForUpdate uses git commit comparison when the repo has .git metadata', async () => {
   const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pi-voice-terminal-'))
 
-  await fs.promises.writeFile(path.join(baseDir, 'install.ps1'), '# install\n', 'utf8')
+  await fs.promises.mkdir(path.join(baseDir, 'scripts'))
+  await fs.promises.writeFile(path.join(baseDir, 'scripts', 'update.sh'), '#!/usr/bin/env bash\n', 'utf8')
   await fs.promises.mkdir(path.join(baseDir, '.git'))
 
   const updater = new AppUpdater({
     baseDir,
-    platform: 'win32',
+    platform: 'linux',
     appVersion: '0.2.0',
     runCommand: async (_command, args) => {
       if (args[0] === 'rev-parse') {
@@ -52,11 +53,12 @@ test('checkForUpdate uses git commit comparison when the repo has .git metadata'
 test('checkForUpdate falls back to version checks when the install is not a git repo', async () => {
   const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pi-voice-terminal-'))
 
-  await fs.promises.writeFile(path.join(baseDir, 'install.ps1'), '# install\n', 'utf8')
+  await fs.promises.mkdir(path.join(baseDir, 'scripts'))
+  await fs.promises.writeFile(path.join(baseDir, 'scripts', 'update.sh'), '#!/usr/bin/env bash\n', 'utf8')
 
   const updater = new AppUpdater({
     baseDir,
-    platform: 'win32',
+    platform: 'linux',
     appVersion: '0.2.0',
     runCommand: async () => '',
     fetchImpl: async () => ({
@@ -73,19 +75,19 @@ test('checkForUpdate falls back to version checks when the install is not a git 
   assert.equal(result.strategy, 'version')
   assert.equal(result.currentLabel, 'v0.2.0')
   assert.equal(result.latestLabel, 'v0.3.0')
-  assert.equal(result.migratesToStablePath, true)
 })
 
-test('applyUpdate runs install.ps1 in place for git repos', async () => {
+test('applyUpdate runs update.sh in place for git repos', async () => {
   const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pi-voice-terminal-'))
   const calls = []
 
-  await fs.promises.writeFile(path.join(baseDir, 'install.ps1'), '# install\n', 'utf8')
+  await fs.promises.mkdir(path.join(baseDir, 'scripts'))
+  await fs.promises.writeFile(path.join(baseDir, 'scripts', 'update.sh'), '#!/usr/bin/env bash\n', 'utf8')
   await fs.promises.mkdir(path.join(baseDir, '.git'))
 
   const updater = new AppUpdater({
     baseDir,
-    platform: 'win32',
+    platform: 'linux',
     appVersion: '0.2.0',
     runCommand: async (command, args, options) => {
       calls.push({
@@ -101,18 +103,20 @@ test('applyUpdate runs install.ps1 in place for git repos', async () => {
 
   assert.equal(result.relaunchMode, 'self')
   assert.equal(calls.length, 1)
-  assert.deepEqual(calls[0].args.slice(-1), ['-NoLaunch'])
+  assert.equal(calls[0].command, path.join(baseDir, 'scripts', 'update.sh'))
+  assert.deepEqual(calls[0].args, ['--no-launch'])
 })
 
-test('applyUpdate prefers the stable repo path for non-git installs', async () => {
+test('applyUpdate uses the same update script for non-git installs', async () => {
   const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pi-voice-terminal-'))
   const calls = []
 
-  await fs.promises.writeFile(path.join(baseDir, 'install.ps1'), '# install\n', 'utf8')
+  await fs.promises.mkdir(path.join(baseDir, 'scripts'))
+  await fs.promises.writeFile(path.join(baseDir, 'scripts', 'update.sh'), '#!/usr/bin/env bash\n', 'utf8')
 
   const updater = new AppUpdater({
     baseDir,
-    platform: 'win32',
+    platform: 'linux',
     appVersion: '0.2.0',
     runCommand: async (command, args, options) => {
       calls.push({
@@ -126,19 +130,18 @@ test('applyUpdate prefers the stable repo path for non-git installs', async () =
 
   const result = await updater.applyUpdate()
 
-  assert.equal(result.relaunchMode, 'stable')
+  assert.equal(result.relaunchMode, 'self')
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].args.includes('-PreferStableRepo'), true)
+  assert.equal(calls[0].command, path.join(baseDir, 'scripts', 'update.sh'))
 })
 
-test('buildUpdatePrompt mentions stable migration for non-git installs', () => {
+test('buildUpdatePrompt keeps the Linux update message simple', () => {
   const message = buildUpdatePrompt({
     available: true,
     strategy: 'version',
     currentLabel: 'v0.2.0',
-    latestLabel: 'v0.3.0',
-    migratesToStablePath: true
+    latestLabel: 'v0.3.0'
   })
 
-  assert.match(message, /move this install into your standard updateable repo/i)
+  assert.match(message, /Update now and restart/i)
 })

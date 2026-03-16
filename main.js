@@ -1,4 +1,3 @@
-const { spawn } = require('node:child_process')
 const { app, BrowserWindow, clipboard, ipcMain, session } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -24,7 +23,6 @@ const { TerminalSession } = require('./lib/terminal-session')
 const { TTS_PROVIDERS } = require('./lib/tts-provider-selection')
 const { TtsService } = require('./lib/tts-service')
 
-configureWindowsStoragePaths()
 loadDotEnv(path.join(__dirname, '.env'))
 
 const OPENAI_API_BASE = process.env.OPENAI_API_BASE || 'https://api.openai.com/v1'
@@ -88,32 +86,6 @@ const appUpdater = new AppUpdater({
   fetchImpl: fetch,
   appVersion: packageManifest.version
 })
-
-function configureWindowsStoragePaths() {
-  if (process.platform !== 'win32') {
-    return
-  }
-
-  const localAppData = String(process.env.LOCALAPPDATA || '').trim()
-  if (!localAppData) {
-    return
-  }
-
-  const appStorageRoot = path.join(localAppData, packageManifest.name || 'pi-voice-terminal')
-  const userDataPath = path.join(appStorageRoot, 'User Data')
-  const cachePath = path.join(appStorageRoot, 'Cache')
-
-  try {
-    fs.mkdirSync(userDataPath, { recursive: true })
-    fs.mkdirSync(cachePath, { recursive: true })
-    app.setPath('userData', userDataPath)
-    app.setPath('sessionData', userDataPath)
-    app.setPath('cache', cachePath)
-  } catch (error) {
-    const message = error && error.message ? error.message : String(error)
-    console.warn(`[WARN] Could not configure Electron cache paths: ${message}`)
-  }
-}
 
 function createWindow() {
   isCloseVaporizePending = false
@@ -294,15 +266,6 @@ app.whenReady().then(() => {
       const result = await appUpdater.applyUpdate()
 
       runtimeLogger.log('app.update_apply_ready', result)
-
-      if (result.relaunchMode === 'stable') {
-        launchStableInstall(result.launchScriptPath, result.stableRepoDir)
-        app.exit(0)
-        return {
-          ok: true,
-          relaunching: true
-        }
-      }
 
       app.relaunch()
       app.exit(0)
@@ -594,25 +557,6 @@ function sendStatus(message) {
   }
 
   terminalSession?.send('app:status', { message })
-}
-
-function launchStableInstall(launchScriptPath, workingDirectory) {
-  if (!launchScriptPath) {
-    throw new Error('launch-pi-voice-terminal.bat is missing after the update.')
-  }
-
-  const child = spawn(
-    'cmd.exe',
-    ['/c', 'start', '', launchScriptPath],
-    {
-      cwd: workingDirectory || path.dirname(launchScriptPath),
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true
-    }
-  )
-
-  child.unref()
 }
 
 function sendStatusOnce(key, message) {
