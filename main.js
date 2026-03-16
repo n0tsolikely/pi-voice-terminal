@@ -16,9 +16,10 @@ const {
   normalizeTranscribePayload,
   normalizeUpdateAction
 } = require('./lib/ipc-contracts')
+const { EspeakNgTtsClient } = require('./lib/espeak-ng-tts-client')
 const { LiveSttBroker } = require('./lib/live-stt-broker')
-const { LocalTtsClient } = require('./lib/local-tts-client')
 const { OpenAiAudioClient, isInvalidApiKeyError } = require('./lib/openai-audio-client')
+const { PiperTtsClient } = require('./lib/piper-tts-client')
 const { RuntimeLogger } = require('./lib/runtime-logger')
 const { runCommand } = require('./lib/run-command')
 const {
@@ -39,8 +40,10 @@ const TTS_VOICE = process.env.OPENAI_TTS_VOICE || 'alloy'
 const TTS_FORMAT = 'mp3'
 const STT_PROVIDER = process.env.STT_PROVIDER || STT_PROVIDERS.AUTO
 const TTS_PROVIDER = process.env.TTS_PROVIDER || TTS_PROVIDERS.AUTO
-const LOCAL_TTS_VOICE = process.env.LOCAL_TTS_VOICE || ''
 const LOCAL_STT_LANGUAGE = process.env.LOCAL_STT_LANGUAGE || 'en'
+const PIPER_BIN = process.env.PIPER_BIN || 'piper'
+const PIPER_VOICE_MODEL = process.env.PIPER_VOICE_MODEL || ''
+const ESPEAK_VOICE = process.env.ESPEAK_VOICE || 'en-us'
 const VOSK_MODEL_PATH = resolveAppPath(
   process.env.VOSK_MODEL_PATH,
   path.join(__dirname, '.local-stt', 'models', 'vosk-model-small-en-us-0.15')
@@ -71,15 +74,22 @@ const openAIClient = new OpenAiAudioClient({
   ttsVoice: TTS_VOICE,
   ttsFormat: TTS_FORMAT
 })
-const localTtsClient = new LocalTtsClient({
+const piperTtsClient = new PiperTtsClient({
   baseDir: __dirname,
   runCommand,
-  voice: LOCAL_TTS_VOICE
+  bin: PIPER_BIN,
+  voiceModel: PIPER_VOICE_MODEL
+})
+const espeakTtsClient = new EspeakNgTtsClient({
+  baseDir: __dirname,
+  runCommand,
+  voice: ESPEAK_VOICE
 })
 const ttsService = new TtsService({
   requestedProvider: TTS_PROVIDER,
   openAiAudioClient: openAIClient,
-  localTtsClient
+  piperTtsClient,
+  espeakTtsClient
 })
 const liveSttBroker = new LiveSttBroker({
   baseDir: __dirname,

@@ -93,7 +93,7 @@ test('sends a status notice when OpenAI TTS falls back to local voice', async ()
   assert.equal(sent[0].channel, 'speech:finalized')
   assert.deepEqual(sent[1], {
     channel: 'app:status',
-    payload: { message: 'OpenAI TTS was unavailable. Using local Windows voice.' }
+    payload: { message: 'OpenAI TTS was unavailable. Using the local Linux voice instead.' }
   })
   assert.equal(sent[2].channel, 'speech:audio')
   assert.equal(sent[2].payload.id, sent[0].payload.id)
