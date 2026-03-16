@@ -1,0 +1,478 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+
+const {
+  extractSpeechText,
+  normalizeTerminalText,
+  stripCodeBlocks
+} = require('../lib/terminal-speech')
+
+test('normalizeTerminalText strips ANSI escapes and backspaces', () => {
+  const input = '\u001b[31mhelxo\u001b[0m\b\blo\r\nprompt> '
+  const output = normalizeTerminalText(input)
+
+  assert.equal(output, 'hello\nprompt>')
+})
+
+test('normalizeTerminalText expands cursor movement redraws into readable spacing and lines', () => {
+  const input = [
+    '\u001b[43;3HCurrent dir:\u001b[43;17H/mnt/c/Users/peter',
+    '\u001b[44;3HGit repo\u001b[44;12Hnearby',
+    '\u001b[45;3H? for shortcuts'
+  ].join('')
+
+  const output = normalizeTerminalText(input)
+
+  assert.match(output, /Current dir:\n\/mnt\/c\/Users\/peter/)
+  assert.match(output, /Git repo\nnearby/)
+  assert.match(output, /\? for shortcuts/)
+})
+
+test('stripCodeBlocks removes fenced code content', () => {
+  const input = 'Before\n```js\nconsole.log("x")\n```\nAfter'
+  const output = stripCodeBlocks(input)
+
+  assert.equal(output, 'Before\n\nAfter')
+})
+
+test('extractSpeechText keeps conversational text and drops code blocks and prompts', () => {
+  const input = [
+    'You:',
+    'Give me a fix.',
+    '',
+    'Here is the change you need.',
+    '',
+    '```js',
+    'console.log("hidden")',
+    '```',
+    '',
+    'It will keep the command line behavior intact.',
+    'user@host:~/repo$'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'Here is the change you need. It will keep the command line behavior intact.')
+})
+
+test('extractSpeechText keeps lead-in prose around unfenced CLI code output', () => {
+  const input = [
+    'Yep. Here is a random snippet plus normal text before and after so you can test that behavior.',
+    '',
+    'function fibonacci(n) {',
+    '  if (n < 0) throw new Error("n must be non-negative");',
+    '  if (n < 2) return n;',
+    '  let a = 0, b = 1;',
+    '  for (let i = 2; i <= n; i++) {',
+    '    [a, b] = [b, a + b];',
+    '  }',
+    '  return b;',
+    '}',
+    '',
+    'If TTV is configured right, it should read this surrounding text naturally and skip the code block.'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Yep. Here is a random snippet plus normal text before and after so you can test that behavior. If TTV is configured right, it should read this surrounding text naturally and skip the code block.'
+  )
+})
+
+test('extractSpeechText keeps prose before and after inline code-like lines in one reply', () => {
+  const input = [
+    'Sure. Here is a quick demo.',
+    '',
+    'Before code: this is a tiny Python snippet that logs a start message, does a simple calculation, and prints the result.',
+    'def run_demo():',
+    'print("Starting demo...")',
+    'total = sum(i * i for i in range(1, 6))',
+    'print(f"Result: {total}")',
+    'if __name__ == "__main__":',
+    'run_demo()',
+    'After code: if you run it, it prints a start line and then Result: 55.'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Sure. Here is a quick demo. Before code: this is a tiny Python snippet that logs a start message, does a simple calculation, and prints the result. After code: if you run it, it prints a start line and then Result: 55.'
+  )
+})
+
+test('extractSpeechText drops unfenced shell script lines while keeping prose around them', () => {
+  const input = [
+    'Second pass: this line should be spoken before the script.',
+    '',
+    'now=$(date +%s)',
+    'echo "[$now] Starting script..."',
+    'echo "Hello, $name!"',
+    'echo "Done."',
+    '',
+    'This line should also be spoken after the script.'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Second pass: this line should be spoken before the script. This line should also be spoken after the script.'
+  )
+})
+
+test('extractSpeechText returns empty for command-heavy output', () => {
+  const input = [
+    'diff --git a/file b/file',
+    'index 123..456 100644',
+    '--- a/file',
+    '+++ b/file',
+    '@@ -1,1 +1,1 @@',
+    '+const x = 1'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, '')
+})
+
+test('extractSpeechText ignores Codex prompt chrome like tips and context meters', () => {
+  const input = [
+    'I fixed the audio path and lowered the idle delay so replies speak faster.',
+    '',
+    'Tip: Press # to search files.',
+    'gpt-5-codex high 86% context left',
+    '> '
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'I fixed the audio path and lowered the idle delay so replies speak faster.')
+})
+
+test('extractSpeechText ignores Codex progress chrome and command tree lines', () => {
+  const input = [
+    '• Ran npm test',
+    '└ node --test',
+    '',
+    'I fixed the clipboard shortcuts and compacted the voice drawer.',
+    '',
+    '› Write tests for @filename'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'I fixed the clipboard shortcuts and compacted the voice drawer.')
+})
+
+test('extractSpeechText ignores background terminal status chrome', () => {
+  const input = [
+    '1 background terminal running · /ps to view · /clean to close',
+    '',
+    'I confirmed the workspace and I’m creating a temp file now.'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'I confirmed the workspace and I’m creating a temp file now.')
+})
+
+test('extractSpeechText ignores bare filenames and long ls permission lines', () => {
+  const input = [
+    'wsl-voice-terminal-runtime',
+    '',
+    'rwxrwxrwx 1 notsolikely notsolikely 209 Mar 8 14:32 /mnt/c/Users/peter/voice_terminal_demo.py',
+    '',
+    'File is created. I’m editing it now with a few real code changes, then I’ll print the diff.'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'File is created. I’m editing it now with a few real code changes, then I’ll print the diff.'
+  )
+})
+
+test('extractSpeechText ignores claude cursor-redraw context and token lines', () => {
+  const input = [
+    'Current dir: /mnt/c/Users/peter',
+    'Git repo nearby',
+    '(6m 37s · ↓ 524 tokens)',
+    '',
+    'Here is the actual assistant answer.',
+    '',
+    'It should be spoken cleanly.',
+    '',
+    '? for shortcuts'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'Here is the actual assistant answer. It should be spoken cleanly.')
+})
+
+test('extractSpeechText strips Claude model chrome prefixes from the spoken answer line', () => {
+  const input = [
+    '· Channeling…X ▪▪▪ Medium /model · Channeling…X ▪▪▪ Medium /model Hey! How can I help you?',
+    '',
+    '? for shortcuts'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'Hey! How can I help you?')
+})
+
+test('extractSpeechText strips decorative bullet markers from real reply text', () => {
+  const input = [
+    '• Here and ready. If you want, I can inspect code, fix something, review a change, or just answer a question.',
+    '',
+    '› Write tests for @filename'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Here and ready. If you want, I can inspect code, fix something, review a change, or just answer a question.'
+  )
+})
+
+test('extractSpeechText keeps short conversational replies when they are the actual assistant output', () => {
+  const input = ['• Hello.', '', '› Use /skills to list available skills'].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'Hello.')
+})
+
+test('extractSpeechText ignores pending-steer and Codex footer lines', () => {
+  const input = [
+    '! pending steer: Ask for more tests.',
+    '',
+    'I fixed the clipboard bridge and the reply playback trigger.',
+    '',
+    'gpt-5.4 xhigh · 93% left · /mnt/c/Users/peter',
+    '›Write tests for @filename'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'I fixed the clipboard bridge and the reply playback trigger.')
+})
+
+test('extractSpeechText recovers reply text when a Codex footer redraw is glued to the next sentence', () => {
+  const input = [
+    'gpt-5.4 xhigh · 100% left · /mnt/c/Users/peterHere is the real assistant reply.',
+    'It should still be spoken cleanly.',
+    '› Write tests for @filename'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Here is the real assistant reply. It should still be spoken cleanly.'
+  )
+})
+
+test('extractSpeechText recovers reply text when a Codex footer redraw is glued to the next sentence with spaces', () => {
+  const input = [
+    'Yes. Your last message came through clearly.',
+    '',
+    'gpt-5.4 xhigh · 100% left · /mnt/c/Users/peter  Only minor issue: it merged interfaceHey without a space, but the rest was easy to understand.',
+    '› Use /skills to list available skills'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Yes. Your last message came through clearly. Only minor issue: it merged interfaceHey without a space, but the rest was easy to understand.'
+  )
+})
+
+test('extractSpeechText keeps Claude reply text but drops Claude tool chatter and shortcuts chrome', () => {
+  const input = [
+    '● Read 1 file (ctrl+o to expand)',
+    '',
+    '❯ hello',
+    '',
+    "● Hey! I've read the rehydration file and have the full context from the previous session.",
+    '',
+    '──────────────────────────────────────────────────── ▪▪▪ ─',
+    '❯ ',
+    '? for shortcuts'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    "Hey! I've read the rehydration file and have the full context from the previous session."
+  )
+})
+
+test('extractSpeechText prefers the final conversational run over earlier assistant chatter', () => {
+  const input = [
+    "I'm checking that now and reading the current files.",
+    '',
+    '● Bash(cd /repo && git status)',
+    '',
+    'Here is the final assistant answer.',
+    '',
+    'It should be the part that gets spoken.',
+    '',
+    '❯ '
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Here is the final assistant answer. It should be the part that gets spoken.'
+  )
+})
+
+test('extractSpeechText keeps full multi-paragraph replies instead of truncating after one paragraph', () => {
+  const input = [
+    'Yes. Your last message came through clearly.',
+    '',
+    'Only minor issue: it merged interfaceHey without a space, but the rest was easy to understand.',
+    '',
+    'The spacing is fixed now and future replies should read cleanly.',
+    '',
+    '› Use /skills to list available skills'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Yes. Your last message came through clearly. Only minor issue: it merged interfaceHey without a space, but the rest was easy to understand. The spacing is fixed now and future replies should read cleanly.'
+  )
+})
+
+test('extractSpeechText ignores earlier longer assistant chatter when a final answer appears later', () => {
+  const input = [
+    'I am checking the files and tracing the runtime behavior now.',
+    '',
+    'I am also reviewing the renderer and the speech relay before I finalize anything.',
+    '',
+    '● Bash(cd /repo && node --test)',
+    '',
+    'The actual answer is ready now.',
+    '',
+    'Only this final reply should be spoken.',
+    '',
+    '❯ '
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'The actual answer is ready now. Only this final reply should be spoken.'
+  )
+})
+
+test('extractSpeechText keeps intro text when a short heading introduces a later list', () => {
+  const input = [
+    "I'm checking the current workspace state so I can answer concretely instead of guessing.",
+    '',
+    'Right now, not much. We are sitting in the Windows home directory, not an active repo root.',
+    '',
+    'What I verified:',
+    '',
+    'Current dir: /mnt/c/Users/peter',
+    'Git repo found nearby: /mnt/c/Users/peter/film_crew',
+    'Synapse is not engaged here.',
+    '',
+    'So the concrete answer is: no repo-specific workflow is active yet.'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    "I'm checking the current workspace state so I can answer concretely instead of guessing. Right now, not much. We are sitting in the Windows home directory, not an active repo root. Synapse is not engaged here. So the concrete answer is: no repo-specific workflow is active yet."
+  )
+})
+
+test('extractSpeechText keeps the lead-in before a bullet list like the runtime receipt case', () => {
+  const input = [
+    "I’m checking the current workspace state so I can answer concretely instead of guessing. First step is to verify where we are and whether this is a repo with extra contract files.",
+    '',
+    'Right now, not much. We’re sitting in /mnt/c/Users/peter, which looks like your Windows home directory, not an active repo root.',
+    '',
+    'What I verified:',
+    '',
+    '- Current dir: /mnt/c/Users/peter',
+    '- Git repo found nearby: /mnt/c/Users/peter/film_crew',
+    '- AGENTS.md files exist in subfolders like /mnt/c/Users/peter/Desktop/AGENTS.md, but not as the contract for the current home-directory worktree',
+    '- I did not find the Synapse pair EXECUTOR.md plus governance/SYNAPSE_STATE.yaml in the current worktree, so Synapse is not engaged here',
+    '',
+    'So the concrete answer is: no repo-specific workflow is active yet, and I haven’t made any changes.'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    "I’m checking the current workspace state so I can answer concretely instead of guessing. First step is to verify where we are and whether this is a repo with extra contract files. Right now, not much. We’re sitting in /mnt/c/Users/peter, which looks like your Windows home directory, not an active repo root. AGENTS.md files exist in subfolders like /mnt/c/Users/peter/Desktop/AGENTS.md, but not as the contract for the current home-directory worktree I did not find the Synapse pair EXECUTOR.md plus governance/SYNAPSE_STATE.yaml in the current worktree, so Synapse is not engaged here So the concrete answer is: no repo-specific workflow is active yet, and I haven’t made any changes."
+  )
+})
+
+test('extractSpeechText keeps conversational prose around runtime-style prompt redraw noise and code', () => {
+  const input = [
+    '• Sure. Here’s a quick demo.',
+    '',
+    '› Run /review on my current changes',
+    '',
+    'gpt-5.3-codex medium · 100% left · /mnt/c/Users/peter',
+    '',
+    'Before code: this is a tiny Python snippet that logs a start message, does a simple calculation, and prints the result.',
+    'def run_demo():',
+    'print("Starting demo...")',
+    'total = sum(i * i for i in range(1, 6))',
+    'print(f"Result: {total}")',
+    'if __name__ == "__main__":',
+    'run_demo()',
+    '',
+    'After code: if you run it, it prints a start line and then Result: 55.',
+    '',
+    '› Run /review on my current changes',
+    '',
+    'gpt-5.3-codex medium · 100% left · /mnt/c/Users/peter'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Sure. Here’s a quick demo. Before code: this is a tiny Python snippet that logs a start message, does a simple calculation, and prints the result. After code: if you run it, it prints a start line and then Result: 55.'
+  )
+})
+
+test('extractSpeechText keeps a mid-run reply when redraw separators are whitespace-only lines', () => {
+  const input = [
+    '',
+    '',
+    '• Mid-run reply: I made the temp code edit and generated the diff successfully; next step is deleting the test files so the workspace is clean again.',
+    '                                                                                                                                                                                   ',
+    '◦ Working (21s • esc to interrupt)',
+    '                                                                                                                                                                                   ',
+    '› Improve documentation in @filename',
+    '                                                                                                                                                                                   ',
+    '  gpt-5.3-codex medium · 99% left · /mnt/c/Users/peter'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Mid-run reply: I made the temp code edit and generated the diff successfully; next step is deleting the test files so the workspace is clean again.'
+  )
+})

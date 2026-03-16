@@ -1,0 +1,3015 @@
+(function bootstrap() {
+  const api = window.terminalAPI
+  const micStateApi = window.WslVoiceTerminalMicState
+  const dictationApi = window.WslVoiceTerminalDictationBuffer
+  const autoSpeechFilterApi = window.WslVoiceTerminalAutoSpeechFilter || null
+  const replyHistoryUiApi = window.WslVoiceTerminalReplyHistoryUi
+  const vaporizeApi = window.WslVoiceTerminalVaporize || null
+  const voiceControlsUiApi = window.WslVoiceTerminalVoiceControlsUi
+  const terminalShellElement = document.getElementById('terminalShell')
+  const overlayElement = document.getElementById('overlay')
+  const terminalElement = document.getElementById('terminal')
+  const replyHistoryElement = document.getElementById('replyHistory')
+  const controlPanel = document.getElementById('controlPanel')
+  const controlDrawer = document.getElementById('controlDrawer')
+  const drawerToggleButton = document.getElementById('drawerToggle')
+  const replyHistoryToggleButton = document.getElementById('replyHistoryToggle')
+  const speechToggleButton = document.getElementById('speechToggleButton')
+  const micButton = document.getElementById('micButton')
+  const speakerButton = document.getElementById('speakerButton')
+  const statusDockElement = document.getElementById('statusDock')
+  const statusElement = document.getElementById('status')
+  const modeDetailElement = document.getElementById('modeDetail')
+  const updatePromptElement = document.getElementById('updatePrompt')
+  const updatePromptTitleElement = document.getElementById('updatePromptTitle')
+  const updatePromptMessageElement = document.getElementById('updatePromptMessage')
+  const updatePromptMetaElement = document.getElementById('updatePromptMeta')
+  const updatePromptConfirmButton = document.getElementById('updatePromptConfirm')
+  const updatePromptDismissButton = document.getElementById('updatePromptDismiss')
+  const meterElement = document.getElementById('meter')
+  const modeButtons = Array.from(document.querySelectorAll('.modeButton'))
+  const meterBars = Array.from(document.querySelectorAll('.meterBar'))
+  const fitAddon = new window.FitAddon.FitAddon()
+  const terminal = new window.Terminal({
+    allowTransparency: true,
+    convertEol: true,
+    cursorBlink: true,
+    fontFamily: 'Consolas, "Cascadia Mono", monospace',
+    fontSize: 14,
+    scrollback: 10000,
+    theme: {
+      background: '#111111',
+      foreground: '#f3f3f3'
+    }
+  })
+  const SpeechRecognitionClass = window.SpeechRecognition || window.webkitSpeechRecognition || null
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext || null
+  const {
+    AUTO_STRATEGIES,
+    MIC_MODES,
+    MIC_PHASES,
+    createMicState,
+    getEnterIntentForMicState,
+    getMicButtonIntent,
+    getMicViewModel,
+    transitionMicState
+  } = micStateApi
+  const {
+    appendCommittedDictation,
+    appendWords,
+    clearInterimDictation,
+    commitInterimDictation,
+    consumeTerminalInput,
+    createDictationBuffer,
+    getRenderedInterimText,
+    normalizeDictationText,
+    replaceInterimDictation
+  } = dictationApi
+  const {
+    attachReplyAudio,
+    renderReplyHistoryView,
+    shouldShowReplyHistory,
+    trimReplyHistory,
+    upsertReplyMessage
+  } = replyHistoryUiApi
+  const { formatModeLabel, renderVoiceControlsView } = voiceControlsUiApi
+  const AUTO_MIN_START_THRESHOLD = 0.012
+  const AUTO_MIN_CONTINUE_THRESHOLD = 0.008
+  const AUTO_START_MARGIN = 0.004
+  const AUTO_CONTINUE_MARGIN = 0.002
+  const AUTO_START_HOLD_MS = 120
+  const AUTO_STOP_SILENCE_MS = 900
+  const AUTO_NOISE_FLOOR_ALPHA = 0.08
+  const MIN_RECORDING_MS = 320
+  const PLAYBACK_COOLDOWN_MS = 450
+  const LIVE_DICTATION_FALLBACK_MS = 650
+  const LIVE_RESULT_GRACE_MS = 900
+  const LIVE_STOP_WAIT_MS = 900
+  const REPLY_HISTORY_LIMIT = 3
+  const REPLY_HISTORY_AUTO_HIDE_MS = 7000
+  const STATUS_NOTICE_MS = 5000
+  const TRANSCRIPTION_WATCHDOG_MS = 20000
+  const AUTO_REPLY_SPEECH_STORAGE_KEY = 'wsl-voice-terminal.auto-reply-speech-enabled'
+  const BUSY_PHASES = new Set([
+    MIC_PHASES.RECORDING,
+    MIC_PHASES.STOPPING,
+    MIC_PHASES.TRANSCRIBING
+  ])
+  const runtimeSupport = {
+    capture: Boolean(navigator.mediaDevices?.getUserMedia && window.MediaRecorder),
+    liveDictation: Boolean(SpeechRecognitionClass),
+    meter: Boolean(AudioContextClass)
+  }
+
+  let micState = createMicState({
+    mode: MIC_MODES.TOGGLE,
+    liveDictationSupported: runtimeSupport.liveDictation
+  })
+  let dictationBuffer = createDictationBuffer()
+  let mediaStream = null
+  let mediaRecorder = null
+  let speechRecognition = null
+  let liveDictationSession = null
+  let currentCapture = null
+  let activePointerId = null
+  let pendingHoldStop = false
+  let isStartingRecording = false
+  let liveRecognitionRestartTimer = 0
+  let voiceCandidateSince = 0
+  let lastVoiceAt = 0
+  let liveFallbackVoiceSince = 0
+  let lastLiveResultAt = 0
+  let playbackQuietUntil = 0
+  let autoLiveVoiceMetrics = createAutoVoiceMetrics()
+  let audioContext = null
+  let analyser = null
+  let sourceNode = null
+  let frequencyData = null
+  let timeDomainData = null
+  let meterAnimationFrame = 0
+  let statusOverride = null
+  let statusOverrideTimer = 0
+  let isPreviewRequestPending = false
+  let autoNoiseFloor = AUTO_MIN_CONTINUE_THRESHOLD * 0.5
+  let activeReplyPlaybackId = ''
+  let currentPlaybackHandle = null
+  let isAutoReplySpeechEnabled = readStoredBoolean(AUTO_REPLY_SPEECH_STORAGE_KEY, true)
+  const playbackQueue = []
+  const replyMessages = []
+  let isPlayingAudio = false
+  let isControlDrawerOpen = false
+  let isReplyHistoryVisible = false
+  const replyVisibilityTimers = new Map()
+  let transcriptionWatchdogTimer = 0
+  let lastShortcutPasteAt = 0
+  let isCloseVaporizeInProgress = false
+  let updatePromptState = {
+    visible: false,
+    busy: false,
+    payload: null
+  }
+
+  terminal.loadAddon(fitAddon)
+  terminal.open(terminalElement)
+  fitAddon.fit()
+  focusTerminal()
+  logRuntime('renderer.start', {
+    runtimeSupport
+  })
+  window.addEventListener('keydown', handleGlobalKeyDown, true)
+  window.addEventListener('copy', handleWindowCopy, true)
+  window.addEventListener('paste', handleWindowPaste, true)
+  window.addEventListener('pointerdown', handleGlobalPointerDown, true)
+  terminal.attachCustomKeyEventHandler((event) => {
+    if (event.type === 'keydown' && isUpdatePromptVisible()) {
+      handleUpdatePromptKey(event)
+      return false
+    }
+
+    if (event.type === 'keydown' && isClipboardShortcut(event, 'c') && hasCopyableSelection()) {
+      event.preventDefault()
+      event.stopPropagation()
+      copyTerminalSelection().catch((error) => {
+        setStatus(error.message, 'error')
+      })
+      return false
+    }
+
+    if (event.type === 'keydown' && isClipboardShortcut(event, 'v')) {
+      event.preventDefault()
+      event.stopPropagation()
+      pasteClipboardText().catch((error) => {
+        setStatus(error.message, 'error')
+      })
+      return false
+    }
+
+    const enterIntent = getEnterIntentForMicState(micState)
+
+    if (event.type === 'keydown' && event.key === 'Enter' && enterIntent !== 'pass-through') {
+      event.preventDefault()
+      event.stopPropagation()
+
+      if (enterIntent === 'stop-recording') {
+        stopRecording({
+          reason: 'manual-enter',
+          keepAutoArmed: isAutoArmed()
+        })
+      } else {
+        renderUi()
+      }
+
+      return false
+    }
+
+    return true
+  })
+
+  api.onPtyData((data) => {
+    terminal.write(data)
+  })
+
+  api.onPtyExit((event) => {
+    setStatus(`WSL session exited (${event.exitCode ?? 'unknown'}).`, 'error')
+  })
+
+  api.onError((payload) => {
+    setStatus(payload.message, 'error')
+  })
+
+  api.onSpeechFinalized((payload) => {
+    registerReplyMessage(payload)
+  })
+
+  api.onSpeechAudio((payload) => {
+    registerReplyAudio(payload)
+
+    if (isAutoReplySpeechEnabled) {
+      enqueueSpeech(payload, {
+        autoRead: true
+      })
+    }
+  })
+
+  api.onStatus((payload) => {
+    if (!payload?.message) {
+      return
+    }
+
+    setStatus(payload.message, 'default', {
+      durationMs: 3800,
+      persistDuringBusy: true
+    })
+  })
+
+  api.onAppUpdateAvailable?.((payload) => {
+    updatePromptState = {
+      visible: true,
+      busy: false,
+      payload: payload || null
+    }
+    renderUpdatePrompt()
+    focusUpdatePrompt()
+    logRuntime('app.update_prompt_shown', {
+      currentLabel: payload?.currentLabel || '',
+      latestLabel: payload?.latestLabel || ''
+    })
+  })
+
+  api.onBeginCloseVaporize?.((payload) => {
+    beginCloseVaporize(payload).catch((error) => {
+      logRuntime('app.close_vaporize_result', {
+        ok: false,
+        method: 'renderer-error',
+        particleCount: 0,
+        errorMessage: error instanceof Error ? error.message : String(error)
+      })
+      api.completeCloseVaporize?.().catch(() => {})
+    })
+  })
+
+  api
+    .startPty({ cols: terminal.cols, rows: terminal.rows })
+    .catch((error) => setStatus(error.message, 'error'))
+
+  terminal.onData((data) => {
+    if (isUpdatePromptVisible()) {
+      return
+    }
+
+    handleManualTerminalInput(data)
+    api.writeToPty(data)
+  })
+
+  window.addEventListener('resize', debounce(resizeTerminal, 80))
+  drawerToggleButton?.addEventListener('click', () => {
+    setControlDrawerOpen(!isControlDrawerOpen)
+
+    if (!isControlDrawerOpen) {
+      focusTerminal()
+    }
+  })
+  replyHistoryToggleButton?.addEventListener('click', () => {
+    if (!replyMessages.length) {
+      focusTerminal()
+      return
+    }
+
+    if (getVisibleReplyMessages().length) {
+      dismissReplyHistory()
+    } else {
+      revealStoredReplyHistory()
+    }
+
+    renderReplyHistory()
+    focusTerminal()
+  })
+
+  speechToggleButton?.addEventListener('click', () => {
+    const nextEnabled = !isAutoReplySpeechEnabled
+
+    applyAutoReplySpeechEnabled(nextEnabled, {
+      persist: true,
+      stopPlayback: !nextEnabled
+    })
+      .then(() => {
+        setStatus(
+          nextEnabled ? 'Automatic reply readback is on.' : 'Automatic reply readback is off.',
+          'default',
+          {
+            durationMs: 2200,
+            persistDuringBusy: true
+          }
+        )
+      })
+      .catch((error) => {
+        setStatus(error.message, 'error')
+      })
+      .finally(() => {
+        focusTerminal()
+      })
+  })
+
+  updatePromptConfirmButton?.addEventListener('click', () => {
+    respondToUpdatePrompt('accept').catch((error) => {
+      setStatus(error.message, 'error')
+    })
+  })
+
+  updatePromptDismissButton?.addEventListener('click', () => {
+    respondToUpdatePrompt('dismiss').catch((error) => {
+      setStatus(error.message, 'error')
+    })
+  })
+
+  modeButtons.forEach((button) => {
+    button.addEventListener('click', () => {
+      setMicMode(button.dataset.mode)
+      setControlDrawerOpen(false)
+      focusTerminal()
+    })
+  })
+
+  speakerButton.addEventListener('click', async () => {
+    if (isPreviewRequestPending) {
+      focusTerminal()
+      return
+    }
+
+    try {
+      isPreviewRequestPending = true
+      setControlDrawerOpen(false)
+      renderUi()
+      setStatus('Requesting test voice...', 'default', {
+        sticky: true,
+        persistDuringBusy: true
+      })
+
+      const payload = await api.previewSpeech({
+        text: 'Speaker test. If you can hear this, terminal audio output is working.'
+      })
+
+      if (!payload.audioBase64) {
+        throw new Error('The TTS test returned no audio.')
+      }
+
+      clearStatus({ preserveErrors: false })
+      enqueueSpeech(payload, {
+        force: true
+      })
+    } catch (error) {
+      setStatus(error.message, 'error')
+    } finally {
+      isPreviewRequestPending = false
+      renderUi()
+      focusTerminal()
+    }
+  })
+
+  micButton.addEventListener('pointerdown', async (event) => {
+    if (event.button !== 0) {
+      return
+    }
+
+    const intent = getMicButtonIntent(micState, 'pointerdown')
+
+    if (intent !== 'start-recording') {
+      return
+    }
+
+    event.preventDefault()
+
+    if (activePointerId !== null) {
+      return
+    }
+
+    activePointerId = event.pointerId
+    pendingHoldStop = false
+    micButton.setPointerCapture(event.pointerId)
+
+    try {
+      await handleMicIntent(intent, { source: MIC_MODES.HOLD })
+    } catch (error) {
+      releaseMicPointerCapture(event.pointerId)
+      activePointerId = null
+      setStatus(error.message, 'error')
+    } finally {
+      focusTerminal()
+    }
+  })
+
+  micButton.addEventListener('pointerup', (event) => {
+    if (event.pointerId !== activePointerId) {
+      return
+    }
+
+    releaseMicPointerCapture(event.pointerId)
+
+    if (isStartingRecording) {
+      pendingHoldStop = true
+      activePointerId = null
+      return
+    }
+
+    if (getMicButtonIntent(micState, 'pointerup') === 'stop-recording') {
+      stopRecording({ reason: 'hold-release' })
+    }
+  })
+
+  micButton.addEventListener('pointercancel', (event) => {
+    if (event.pointerId !== activePointerId) {
+      return
+    }
+
+    releaseMicPointerCapture(event.pointerId)
+
+    if (isStartingRecording) {
+      pendingHoldStop = true
+      activePointerId = null
+      return
+    }
+
+    if (getMicButtonIntent(micState, 'pointercancel') === 'stop-recording') {
+      stopRecording({ reason: 'hold-cancel' })
+    }
+  })
+
+  micButton.addEventListener('click', async (event) => {
+    event.preventDefault()
+
+    const intent = getMicButtonIntent(micState, 'click')
+
+    try {
+      await handleMicIntent(intent)
+    } catch (error) {
+      setStatus(error.message, 'error')
+    } finally {
+      focusTerminal()
+    }
+  })
+
+  initializeUi()
+
+  async function handleMicIntent(intent, { source = micState.mode } = {}) {
+    logRuntime('mic.intent', {
+      intent,
+      source,
+      mode: micState.mode
+    })
+
+    switch (intent) {
+      case 'focus-terminal':
+        return
+      case 'start-recording':
+        await startRecording({ source })
+        return
+      case 'stop-recording':
+        stopRecording({
+          reason: 'manual-click',
+          keepAutoArmed: isAutoArmed()
+        })
+        return
+      case 'arm-auto':
+        await enableAutoListening()
+        return
+      case 'disarm-auto':
+        disableAutoListening()
+        return
+      default:
+        return
+    }
+  }
+
+  async function startRecording({ source, keepAutoArmed = false }) {
+    if (isRecording() || isStartingRecording || isBusyMicPhase(micState.phase)) {
+      return
+    }
+
+    clearStatus({ preserveErrors: false })
+    isStartingRecording = true
+    renderUi()
+    setStatus('Opening mic...', 'default', {
+      durationMs: STATUS_NOTICE_MS,
+      persistDuringBusy: true
+    })
+
+    try {
+      await ensureMicrophoneReady()
+
+      if (!window.MediaRecorder) {
+        throw new Error('MediaRecorder is not available in this Electron runtime.')
+      }
+
+      const chunks = []
+      const recorder = new MediaRecorder(mediaStream, pickRecorderOptions())
+      const capture = {
+        keepAutoArmed,
+        source,
+        startedAt: performance.now(),
+        autoVoiceMetrics: source === MIC_MODES.AUTO ? createAutoVoiceMetrics() : null
+      }
+
+      mediaRecorder = recorder
+      currentCapture = capture
+      lastVoiceAt = capture.startedAt
+      voiceCandidateSince = 0
+
+      if (source !== MIC_MODES.AUTO) {
+        dictationBuffer = createDictationBuffer()
+      }
+
+      recorder.addEventListener('dataavailable', (captureEvent) => {
+        if (captureEvent.data.size > 0) {
+          chunks.push(captureEvent.data)
+        }
+      })
+
+      recorder.addEventListener(
+        'stop',
+        async () => {
+          const mimeType = recorder.mimeType || 'audio/webm'
+          const captureSource = currentCapture?.source || source
+          const shouldResumeAuto = Boolean(currentCapture?.keepAutoArmed) && isAutoArmed()
+          const captureVoiceMetrics = cloneAutoVoiceMetrics(currentCapture?.autoVoiceMetrics)
+          const pointerId = activePointerId
+
+          currentCapture = null
+          mediaRecorder = null
+          activePointerId = null
+          pendingHoldStop = false
+          releaseMicPointerCapture(pointerId)
+
+          try {
+            const blob = new Blob(chunks, { type: mimeType })
+            const liveSnapshot =
+              captureSource === MIC_MODES.AUTO
+                ? null
+                : await stopLiveDictation({
+                    keepTypedText: true
+                  })
+
+            if (blob.size === 0) {
+              if (liveSnapshot?.text) {
+                finalizeBufferedDictationText(liveSnapshot.text)
+                transitionMic({
+                  type: 'TRANSCRIPTION_INJECTED'
+                })
+                setStatus('Transcript injected. Press Enter to run.')
+                focusTerminal()
+                return
+              }
+
+              transitionMic({
+                type: 'RESET_TO_REST'
+              })
+              setStatus(
+                shouldResumeAuto ? 'Auto listening is on. No speech detected.' : 'No speech detected.',
+                'default'
+              )
+              focusTerminal()
+              return
+            }
+
+            if (
+              captureSource === MIC_MODES.AUTO &&
+              !shouldAttemptAutoTranscription(captureVoiceMetrics)
+            ) {
+              transitionMic({
+                type: 'TRANSCRIPTION_EMPTY'
+              })
+              setStatus(
+                shouldResumeAuto ? 'Auto listening is on. No speech detected.' : 'No speech detected.',
+                'default'
+              )
+              focusTerminal()
+              return
+            }
+
+            transitionMic({
+              type: 'TRANSCRIBING_STARTED'
+            })
+
+            const transcript = await api.transcribeAudio({
+              audioBuffer: await blob.arrayBuffer(),
+              mimeType: blob.type || mimeType
+            })
+            const injectedText = normalizeDictationText(transcript || liveSnapshot?.text)
+            const acceptedAutoTranscript =
+              captureSource === MIC_MODES.AUTO
+                ? evaluateAutoTranscriptCandidate(injectedText, captureVoiceMetrics, {
+                    minVoiceMs: 190,
+                    minPeakLevel: 0.026
+                  })
+                : { accepted: true, normalizedText: injectedText, reason: 'manual-mode' }
+
+            if (!acceptedAutoTranscript.accepted) {
+              logRuntime('dictation.auto_capture_rejected', {
+                reason: acceptedAutoTranscript.reason,
+                text: acceptedAutoTranscript.normalizedText || '',
+                voiceMs: captureVoiceMetrics.voiceMs,
+                peakLevel: captureVoiceMetrics.peakLevel
+              })
+            }
+
+            if (!acceptedAutoTranscript.normalizedText || !acceptedAutoTranscript.accepted) {
+              transitionMic({
+                type: 'TRANSCRIPTION_EMPTY'
+              })
+              setStatus(
+                shouldResumeAuto ? 'Auto listening is on. No speech detected.' : 'No speech detected.',
+                'default'
+              )
+              focusTerminal()
+              return
+            }
+
+            if (captureSource === MIC_MODES.AUTO) {
+              appendCommittedDictationText(acceptedAutoTranscript.normalizedText)
+            } else {
+              finalizeBufferedDictationText(acceptedAutoTranscript.normalizedText)
+            }
+
+            transitionMic({
+              type: 'TRANSCRIPTION_INJECTED'
+            })
+
+            if (shouldResumeAuto) {
+              setStatus('Transcript injected. Auto listening stays on. Press Enter to run.')
+            }
+
+            focusTerminal()
+          } catch (error) {
+            transitionMic({
+              type: 'RESET_TO_REST'
+            })
+            setStatus(error.message, 'error')
+          }
+        },
+        { once: true }
+      )
+
+      recorder.start()
+
+      if (supportsManualLiveDictation(source)) {
+        startLiveDictation({ source }).catch((error) => {
+          logRuntime('dictation.live_start_failed', {
+            source,
+            message: error instanceof Error ? error.message : String(error)
+          })
+          setStatus(
+            'Live preview is unavailable here. The final transcript will appear after capture stops.',
+            'default',
+            {
+              durationMs: STATUS_NOTICE_MS,
+              persistDuringBusy: true
+            }
+          )
+        })
+      }
+
+      transitionMic({
+        type: 'RECORDING_STARTED',
+        source
+      })
+      logRuntime('mic.recording_started', {
+        source,
+        keepAutoArmed
+      })
+      clearStatus({ preserveErrors: false })
+
+      if (source === MIC_MODES.HOLD && pendingHoldStop) {
+        pendingHoldStop = false
+        stopRecording({ reason: 'hold-release' })
+      }
+
+      focusTerminal()
+    } catch (error) {
+      transitionMic({
+        type: 'RESET_TO_REST'
+      })
+      setStatus(error.message, 'error')
+      throw error
+    } finally {
+      isStartingRecording = false
+      renderUi()
+    }
+  }
+
+  function stopRecording({ reason = 'manual-stop', keepAutoArmed = false } = {}) {
+    if (!isRecording() || micState.phase === MIC_PHASES.STOPPING) {
+      activePointerId = null
+      renderUi()
+      return false
+    }
+
+    if (currentCapture) {
+      currentCapture.keepAutoArmed = keepAutoArmed
+    }
+
+    if (reason === 'mode-change' || reason === 'auto-disabled') {
+      clearStatus({ preserveErrors: false })
+    }
+
+    transitionMic({
+      type: 'RECORDING_STOPPING'
+    })
+    logRuntime('mic.recording_stopping', {
+      reason,
+      keepAutoArmed
+    })
+    mediaRecorder.stop()
+    focusTerminal()
+    return true
+  }
+
+  function resizeTerminal() {
+    fitAddon.fit()
+    api.resizePty({ cols: terminal.cols, rows: terminal.rows })
+  }
+
+  function shouldDeferAutoReplyPlayback() {
+    return (
+      isStartingRecording ||
+      BUSY_PHASES.has(micState.phase) ||
+      activePointerId !== null
+    )
+  }
+
+  function maybeStartSpeechPlayback({ force = false } = {}) {
+    if (isPlayingAudio || !playbackQueue.length) {
+      return
+    }
+
+    const nextPayload = playbackQueue[0]
+
+    if (!force && nextPayload?.autoRead && shouldDeferAutoReplyPlayback()) {
+      return
+    }
+
+    isPlayingAudio = true
+    transitionMic({
+      type: 'PLAYBACK_STARTED'
+    })
+    playNextSpeech()
+  }
+
+  function enqueueSpeech(payload, options = {}) {
+    if (!payload?.audioBase64) {
+      return
+    }
+
+    playbackQueue.push({
+      ...payload,
+      autoRead: Boolean(options.autoRead)
+    })
+
+    maybeStartSpeechPlayback({
+      force: Boolean(options.force)
+    })
+  }
+
+  async function playNextSpeech() {
+    if (!playbackQueue.length) {
+      isPlayingAudio = false
+      playbackQuietUntil = performance.now() + PLAYBACK_COOLDOWN_MS
+      transitionMic({
+        type: 'PLAYBACK_FINISHED'
+      })
+      logRuntime('speech.playback_queue_drained', {})
+      return
+    }
+
+    const payload = playbackQueue.shift()
+    const replyMessage = payload.id ? findReplyMessage(payload.id) : null
+
+    activeReplyPlaybackId = payload.id || ''
+    if (replyMessage) {
+      showReplyMessage(replyMessage.id, {
+        mode: replyMessage.visibilityMode || 'history'
+      })
+      replyMessage.pendingHideAfterPlayback = true
+      clearReplyVisibilityTimer(replyMessage.id)
+    }
+    renderReplyHistory()
+
+    const bytes = base64ToUint8Array(payload.audioBase64)
+    const blob = new Blob([bytes], { type: payload.mimeType || 'audio/mpeg' })
+    const objectUrl = URL.createObjectURL(blob)
+    const audio = new Audio(objectUrl)
+    let finished = false
+
+    const finalize = (errorMessage) => {
+      if (finished) {
+        return
+      }
+
+      finished = true
+      URL.revokeObjectURL(objectUrl)
+      if (currentPlaybackHandle?.audio === audio) {
+        currentPlaybackHandle = null
+      }
+      const playedReplyMessage = payload.id ? findReplyMessage(payload.id) : null
+      activeReplyPlaybackId = ''
+      if (playedReplyMessage?.pendingHideAfterPlayback) {
+        playedReplyMessage.pendingHideAfterPlayback = false
+        dismissReplyMessage(playedReplyMessage.id, {
+          reason: 'reply-playback-finished'
+        })
+      } else {
+        syncReplyHistoryVisibility()
+        renderReplyHistory()
+      }
+      logRuntime('speech.playback_finished', {
+        id: payload.id || '',
+        errorMessage: errorMessage || ''
+      })
+
+      if (errorMessage) {
+        setStatus(errorMessage, 'error')
+      }
+
+      playNextSpeech()
+    }
+
+    currentPlaybackHandle = {
+      audio,
+      finalize
+    }
+
+    audio.addEventListener(
+      'ended',
+      () => finalize(),
+      { once: true }
+    )
+
+    audio.addEventListener(
+      'error',
+      () => finalize('Audio playback failed.'),
+      { once: true }
+    )
+
+    try {
+      logRuntime('speech.playback_started', {
+        id: payload.id || '',
+        provider: payload.provider || '',
+        text: payload.text || ''
+      })
+      await audio.play()
+    } catch (error) {
+      finalize(error.message)
+    }
+  }
+
+  function stopSpeechPlayback({ clearQueue = true } = {}) {
+    if (clearQueue) {
+      playbackQueue.length = 0
+    }
+
+    if (!currentPlaybackHandle) {
+      if (!playbackQueue.length) {
+        isPlayingAudio = false
+      }
+      activeReplyPlaybackId = ''
+      syncReplyHistoryVisibility()
+      renderReplyHistory()
+      return
+    }
+
+    try {
+      currentPlaybackHandle.audio.pause()
+      currentPlaybackHandle.audio.currentTime = 0
+    } catch (_error) {
+      // The audio element may already be tearing down.
+    }
+
+    currentPlaybackHandle.finalize()
+  }
+
+  function setStatus(message, tone = 'default', options = {}) {
+    if (!message) {
+      clearStatus({ preserveErrors: false })
+      return
+    }
+
+    if (
+      statusOverride?.message &&
+      statusOverride.tone !== 'error' &&
+      statusElement?.textContent &&
+      (statusOverride.message !== message || statusOverride.tone !== tone)
+    ) {
+      vaporizeBubble(statusElement, {
+        durationMs: 560,
+        particleSize: 3,
+        reason: 'status-replace'
+      })
+    }
+
+    clearStatusTimer()
+
+    const sticky = options.sticky ?? tone === 'error'
+    const durationMs = options.durationMs ?? (sticky ? 0 : STATUS_NOTICE_MS)
+
+    statusOverride = {
+      message,
+      tone,
+      sticky,
+      persistDuringBusy: Boolean(options.persistDuringBusy),
+      expiresAt: durationMs ? performance.now() + durationMs : 0
+    }
+
+    logRuntime('ui.status', {
+      action: 'set',
+      message,
+      tone,
+      sticky,
+      durationMs,
+      persistDuringBusy: Boolean(options.persistDuringBusy)
+    })
+
+    if (!sticky && durationMs > 0) {
+      statusOverrideTimer = window.setTimeout(() => {
+        if (statusOverride?.expiresAt && statusOverride.expiresAt <= performance.now()) {
+          dismissStatusOverride()
+        }
+      }, durationMs + 20)
+    }
+
+    renderStatus()
+  }
+
+  function clearStatus({ preserveErrors = true } = {}) {
+    if (preserveErrors && statusOverride?.tone === 'error') {
+      renderStatus()
+      return
+    }
+
+    clearStatusTimer()
+    if (statusOverride?.message && statusOverride.tone !== 'error') {
+      logRuntime('ui.status', {
+        action: 'clear',
+        message: statusOverride.message,
+        tone: statusOverride.tone
+      })
+      vaporizeBubble(statusElement, {
+        durationMs: 560,
+        particleSize: 3,
+        reason: 'status-clear'
+      })
+    }
+    statusOverride = null
+    renderStatus()
+  }
+
+  function clearStatusTimer() {
+    if (statusOverrideTimer) {
+      window.clearTimeout(statusOverrideTimer)
+      statusOverrideTimer = 0
+    }
+  }
+
+  function dismissStatusOverride() {
+    if (!statusOverride || statusOverride.sticky || statusOverride.tone === 'error') {
+      return
+    }
+
+    clearStatusTimer()
+    logRuntime('ui.status', {
+      action: 'timeout',
+      message: statusOverride.message,
+      tone: statusOverride.tone
+    })
+    vaporizeBubble(statusElement, {
+      durationMs: 560,
+      particleSize: 3,
+      reason: 'status-timeout'
+    })
+    statusOverride = null
+    renderStatus()
+  }
+
+  async function pasteClipboardText() {
+    const text = await api.readClipboardText()
+
+    if (!text) {
+      throw new Error('Clipboard does not contain text.')
+    }
+
+    logRuntime('clipboard.paste_requested', {
+      text
+    })
+    writePastedText(text)
+  }
+
+  function writePastedText(text) {
+    terminal.paste(normalizePastedText(text))
+    logRuntime('clipboard.pasted', {
+      text
+    })
+    setStatus('Pasted text from clipboard.')
+    focusTerminal()
+  }
+
+  function initializeUi() {
+    api
+      .getRuntimeInfo()
+      .then((info) => {
+        logRuntime('renderer.runtime_info', info)
+      })
+      .catch(() => {})
+
+    if (!runtimeSupport.capture) {
+      setStatus('Microphone capture is not available in this Electron runtime.', 'error')
+    }
+
+    applyAutoReplySpeechEnabled(isAutoReplySpeechEnabled, {
+      persist: false,
+      stopPlayback: false
+    }).catch(() => {})
+
+    setControlDrawerOpen(false)
+    renderUi()
+    renderMeterIdle()
+    renderUpdatePrompt()
+  }
+
+  async function beginCloseVaporize(payload = {}) {
+    if (isCloseVaporizeInProgress) {
+      return
+    }
+
+    isCloseVaporizeInProgress = true
+    const imageDataUrl = String(payload?.imageDataUrl || '')
+    const width = Math.max(1, Number(payload?.width || window.innerWidth || 0))
+    const height = Math.max(1, Number(payload?.height || window.innerHeight || 0))
+    const durationMs = Math.min(900, Math.max(500, Number(payload?.durationMs || 760)))
+    let backdrop = null
+
+    logRuntime('app.close_vaporize', {
+      action: 'start',
+      hasImage: Boolean(imageDataUrl),
+      width,
+      height,
+      durationMs
+    })
+
+    try {
+      if (imageDataUrl && vaporizeApi?.vaporizeImageDataUrl) {
+        backdrop = createCloseVaporizeBackdrop(imageDataUrl, width, height)
+        hideLiveUiForCloseVaporize()
+        await nextFrame()
+        backdrop.style.opacity = '0'
+
+        const result = await vaporizeApi.vaporizeImageDataUrl(
+          imageDataUrl,
+          {
+            left: 0,
+            top: 0,
+            width,
+            height
+          },
+          {
+            durationMs,
+            particleSize: 3,
+            travel: 42,
+            gravity: 16
+          }
+        )
+
+        logRuntime('app.close_vaporize_result', {
+          ok: Boolean(result?.ok),
+          method: result?.method || '',
+          particleCount: Number(result?.particleCount || 0),
+          errorMessage: result?.errorMessage || ''
+        })
+      } else {
+        logRuntime('app.close_vaporize_result', {
+          ok: false,
+          method: 'missing-snapshot',
+          particleCount: 0,
+          errorMessage: imageDataUrl ? 'Window vaporize helper is unavailable.' : 'Window snapshot was missing.'
+        })
+      }
+    } finally {
+      backdrop?.remove()
+      await api.completeCloseVaporize?.()
+    }
+  }
+
+  function createCloseVaporizeBackdrop(imageDataUrl, width, height) {
+    const backdrop = document.createElement('img')
+    backdrop.src = imageDataUrl
+    backdrop.alt = ''
+    backdrop.setAttribute('aria-hidden', 'true')
+    backdrop.style.position = 'fixed'
+    backdrop.style.left = '0'
+    backdrop.style.top = '0'
+    backdrop.style.width = `${width}px`
+    backdrop.style.height = `${height}px`
+    backdrop.style.objectFit = 'cover'
+    backdrop.style.pointerEvents = 'none'
+    backdrop.style.zIndex = '9998'
+    backdrop.style.opacity = '1'
+    backdrop.style.transition = 'opacity 140ms linear'
+    document.body.appendChild(backdrop)
+    return backdrop
+  }
+
+  function hideLiveUiForCloseVaporize() {
+    ;[terminalShellElement, overlayElement, statusDockElement, micButton].forEach((element) => {
+      if (element instanceof Element) {
+        element.style.visibility = 'hidden'
+      }
+    })
+  }
+
+  function nextFrame() {
+    return new Promise((resolve) => {
+      window.requestAnimationFrame(() => resolve())
+    })
+  }
+
+  function renderUi() {
+    const viewModel = getMicViewModel(micState)
+    const modeDetail = getModeDetailText(viewModel)
+    const autoModeSupported = supportsAutoMode()
+
+    renderVoiceControlsView({
+      controlPanel,
+      modeButtons,
+      speakerButton,
+      speechToggleButton,
+      micButton,
+      drawerToggleButton,
+      meterElement,
+      modeDetailElement,
+      micState,
+      runtimeSupport,
+      isStartingRecording,
+      viewModel: {
+        ...viewModel,
+        modeDetail,
+        modeDetailTone:
+          micState.mode === MIC_MODES.AUTO && !autoModeSupported ? 'muted' : 'default',
+        isControlDrawerOpen,
+        isPreviewRequestPending
+      },
+      autoModeSupported,
+      hasAnalyser: Boolean(analyser),
+      isAutoReplySpeechEnabled
+    })
+
+    renderStatus()
+    renderReplyHistory()
+  }
+
+  function renderStatus() {
+    const override = getActiveStatusOverride()
+    const shouldUseOverride =
+      Boolean(override) &&
+      (override.tone === 'error' || override.persistDuringBusy || !isBusyUiPhase())
+    const status = shouldUseOverride ? override : null
+
+    if (!statusDockElement || !statusElement) {
+      return
+    }
+
+    if (!status) {
+      statusDockElement.hidden = true
+      statusDockElement.dataset.visible = 'false'
+      statusElement.textContent = ''
+      statusElement.dataset.tone = 'default'
+      return
+    }
+
+    statusDockElement.hidden = false
+    statusDockElement.dataset.visible = 'true'
+    statusElement.textContent = status.message
+    statusElement.dataset.tone = status.tone
+  }
+
+  function getActiveStatusOverride() {
+    if (!statusOverride) {
+      return null
+    }
+
+    if (!statusOverride.sticky && statusOverride.expiresAt <= performance.now()) {
+      statusOverride = null
+      return null
+    }
+
+    return statusOverride
+  }
+
+  function getModeDetailText(viewModel) {
+    if (!runtimeSupport.capture) {
+      return 'Mic capture is unavailable here, so dictation controls are disabled.'
+    }
+
+    if (micState.mode === MIC_MODES.AUTO && !supportsAutoMode()) {
+      return 'Always-on listening is unavailable because this runtime cannot monitor mic audio.'
+    }
+
+    return viewModel.modeDescription
+  }
+
+  function setMicMode(nextMode) {
+    if (
+      !Object.values(MIC_MODES).includes(nextMode) ||
+      nextMode === micState.mode ||
+      isStartingRecording
+    ) {
+      renderUi()
+      return
+    }
+
+    if (nextMode === MIC_MODES.AUTO && !supportsAutoMode()) {
+      setStatus(
+        'Always-on listening is unavailable in this runtime.',
+        'default',
+        { durationMs: 3200 }
+      )
+      renderUi()
+      return
+    }
+
+    if (micState.mode === MIC_MODES.AUTO && micState.autoEnabled && nextMode !== MIC_MODES.AUTO) {
+      disarmAutoRuntime({ keepTypedText: true })
+    }
+
+    if (isRecording()) {
+      stopRecording({ reason: 'mode-change' })
+    }
+
+    activePointerId = null
+    transitionMic({
+      type: 'SET_MODE',
+      mode: nextMode
+    })
+    logRuntime('mic.mode_changed', {
+      mode: nextMode
+    })
+    clearStatus({ preserveErrors: false })
+  }
+
+  async function enableAutoListening() {
+    if (!supportsAutoMode()) {
+      setStatus('Always-on listening is unavailable in this runtime.')
+      return
+    }
+
+    clearStatus({ preserveErrors: false })
+    await ensureMicrophoneReady()
+    resetAutoTracking()
+    const strategy = hasLiveDictationSupport() ? AUTO_STRATEGIES.LIVE : AUTO_STRATEGIES.CAPTURE
+    transitionMic({
+      type: 'AUTO_ARM'
+    })
+    transitionMic({
+      type: 'AUTO_STRATEGY_SET',
+      strategy
+    })
+    logRuntime('mic.auto_enabled', {
+      strategy
+    })
+
+    if (strategy !== AUTO_STRATEGIES.LIVE) {
+      return
+    }
+
+    try {
+      await startLiveDictation({ source: MIC_MODES.AUTO })
+    } catch (_error) {
+      disableLiveDictationForSession('start-failed')
+      switchAutoModeToCapture('Live dictation is unavailable here. Using auto capture fallback.')
+    }
+  }
+
+  function disableAutoListening() {
+    disarmAutoRuntime({ keepTypedText: true })
+    resetAutoTracking()
+    transitionMic({
+      type: 'AUTO_DISARM'
+    })
+    logRuntime('mic.auto_disabled', {})
+
+    if (isRecording()) {
+      stopRecording({ reason: 'auto-disabled' })
+      return
+    }
+
+    clearStatus({ preserveErrors: false })
+  }
+
+  function disarmAutoRuntime({ keepTypedText = true } = {}) {
+    clearLiveRecognitionRestart()
+
+    if (speechRecognition || micState.autoStrategy === AUTO_STRATEGIES.LIVE) {
+      stopLiveDictation({ keepTypedText })
+    }
+  }
+
+  async function ensureMicrophoneReady() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Microphone capture is not available in this Electron runtime.')
+    }
+
+    if (!mediaStream) {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          autoGainControl: true,
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      })
+    }
+
+    if (!audioContext && AudioContextClass) {
+      audioContext = new AudioContextClass()
+      sourceNode = audioContext.createMediaStreamSource(mediaStream)
+      analyser = audioContext.createAnalyser()
+      analyser.fftSize = 256
+      analyser.smoothingTimeConstant = 0.68
+      sourceNode.connect(analyser)
+      frequencyData = new Uint8Array(analyser.frequencyBinCount)
+      timeDomainData = new Uint8Array(analyser.fftSize)
+    }
+
+    if (audioContext?.state === 'suspended') {
+      await audioContext.resume()
+    }
+
+    if (analyser && !meterAnimationFrame) {
+      meterAnimationFrame = window.requestAnimationFrame(tickMeter)
+    }
+  }
+
+  function tickMeter() {
+    if (analyser && frequencyData && timeDomainData) {
+      analyser.getByteFrequencyData(frequencyData)
+      analyser.getByteTimeDomainData(timeDomainData)
+      const level = getSignalLevel(timeDomainData)
+      const autoLevel = getAutoListeningLevel(level, frequencyData)
+
+      if (shouldShowLiveMeter()) {
+        renderMeter(frequencyData, level)
+      } else {
+        renderMeterIdle()
+      }
+
+      processAutoListening(autoLevel)
+    } else {
+      renderMeterIdle()
+    }
+
+    meterAnimationFrame = window.requestAnimationFrame(tickMeter)
+  }
+
+  function renderMeter(data, level) {
+    let strongestBand = 0
+    const binsPerBar = Math.max(1, Math.floor(data.length / meterBars.length))
+
+    meterBars.forEach((bar, index) => {
+      const start = index * binsPerBar
+      const end = Math.min(data.length, start + binsPerBar)
+      let total = 0
+      let count = 0
+
+      for (let cursor = start; cursor < end; cursor += 1) {
+        total += data[cursor]
+        count += 1
+      }
+
+      const average = count ? total / count / 255 : 0
+      const scale = clamp(Math.max(0.08, average * 1.35 + level * 0.95), 0.08, 1)
+
+      strongestBand = Math.max(strongestBand, scale)
+      bar.style.setProperty('--bar-scale', scale.toFixed(3))
+      bar.dataset.active = String(scale > 0.2)
+    })
+
+    updateMicVisualLevel(Math.max(level, strongestBand))
+  }
+
+  function renderMeterIdle() {
+    meterBars.forEach((bar, index) => {
+      const restingScale = 0.1 + ((index % 4) * 0.015)
+      bar.style.setProperty('--bar-scale', restingScale.toFixed(3))
+      bar.dataset.active = 'false'
+    })
+
+    updateMicVisualLevel(0)
+  }
+
+  function processAutoListening(level) {
+    if (
+      micState.mode !== MIC_MODES.AUTO ||
+      !micState.autoEnabled ||
+      micState.phase === MIC_PHASES.TRANSCRIBING ||
+      isStartingRecording
+    ) {
+      voiceCandidateSince = 0
+      return
+    }
+
+    const now = performance.now()
+    const { startThreshold, continueThreshold } = getAutoGateThresholds()
+
+    if (shouldUseLiveDictation()) {
+      sampleAutoVoiceMetrics(autoLiveVoiceMetrics, level, continueThreshold, now)
+      maybeFallbackFromLiveDictation(level, now)
+      processAutoLiveListening(level, now, continueThreshold)
+      return
+    }
+
+    if (isPlayingAudio || now < playbackQuietUntil) {
+      voiceCandidateSince = 0
+      return
+    }
+
+    if (!isRecording()) {
+      updateAutoNoiseFloor(level)
+    }
+
+    if (isRecording()) {
+      if (currentCapture?.source === MIC_MODES.AUTO) {
+        sampleAutoVoiceMetrics(currentCapture.autoVoiceMetrics, level, continueThreshold, now)
+      }
+
+      if (level >= continueThreshold) {
+        lastVoiceAt = now
+      }
+
+      if (
+        !isStartingRecording &&
+        now - lastVoiceAt >= AUTO_STOP_SILENCE_MS &&
+        now - (currentCapture?.startedAt || now) >= MIN_RECORDING_MS
+      ) {
+        stopRecording({
+          reason: 'auto-silence',
+          keepAutoArmed: true
+        })
+      }
+
+      return
+    }
+
+    if (!supportsAutoCapture()) {
+      voiceCandidateSince = 0
+      return
+    }
+
+    if (level >= startThreshold) {
+      if (!voiceCandidateSince) {
+        voiceCandidateSince = now
+      }
+
+      if (now - voiceCandidateSince >= AUTO_START_HOLD_MS) {
+        voiceCandidateSince = 0
+        startRecording({
+          source: MIC_MODES.AUTO,
+          keepAutoArmed: true
+        }).catch((error) => {
+          setStatus(error.message, 'error')
+        })
+      }
+
+      return
+    }
+
+    voiceCandidateSince = 0
+  }
+
+  function processAutoLiveListening(level, now, continueThreshold) {
+    if (isPlayingAudio || now < playbackQuietUntil) {
+      voiceCandidateSince = 0
+      return
+    }
+
+    if (level >= continueThreshold || hasRecentLiveDictationActivity(now)) {
+      lastVoiceAt = now
+      voiceCandidateSince = 0
+      return
+    }
+
+    if (!hasBufferedAutoLiveText()) {
+      return
+    }
+
+    if (lastVoiceAt && now - lastVoiceAt >= AUTO_STOP_SILENCE_MS) {
+      submitAutoLiveDictation()
+    }
+  }
+
+  function updateAutoNoiseFloor(level) {
+    autoNoiseFloor =
+      autoNoiseFloor * (1 - AUTO_NOISE_FLOOR_ALPHA) + level * AUTO_NOISE_FLOOR_ALPHA
+  }
+
+  function getAutoGateThresholds() {
+    return {
+      startThreshold: Math.max(AUTO_MIN_START_THRESHOLD, autoNoiseFloor + AUTO_START_MARGIN),
+      continueThreshold: Math.max(
+        AUTO_MIN_CONTINUE_THRESHOLD,
+        autoNoiseFloor + AUTO_CONTINUE_MARGIN
+      )
+    }
+  }
+
+  function isRecording() {
+    return Boolean(mediaRecorder && mediaRecorder.state === 'recording')
+  }
+
+  function supportsAutoMode() {
+    return runtimeSupport.capture && runtimeSupport.meter
+  }
+
+  function supportsAutoCapture() {
+    return Boolean(analyser && timeDomainData && frequencyData)
+  }
+
+  function hasLiveDictationSupport() {
+    return Boolean(runtimeSupport.liveDictation && micState.liveDictationSupported)
+  }
+
+  function shouldUseLiveDictation() {
+    return Boolean(
+      hasLiveDictationSupport() &&
+        micState.mode === MIC_MODES.AUTO &&
+        micState.autoEnabled &&
+        micState.autoStrategy === AUTO_STRATEGIES.LIVE
+    )
+  }
+
+  function supportsManualLiveDictation(source) {
+    return Boolean(hasLiveDictationSupport() && source !== MIC_MODES.AUTO)
+  }
+
+  function disableLiveDictationForSession(errorCode) {
+    if (!micState.liveDictationSupported) {
+      return
+    }
+
+    transitionMic({
+      type: 'LIVE_DICTATION_SUPPORT_SET',
+      supported: false
+    })
+    logRuntime('dictation.live_disabled', {
+      error: errorCode || 'unknown'
+    })
+  }
+
+  async function startLiveDictation({ source = MIC_MODES.AUTO } = {}) {
+    if (
+      liveDictationSession ||
+      speechRecognition ||
+      (!shouldUseLiveDictation() && !supportsManualLiveDictation(source))
+    ) {
+      return
+    }
+
+    const recognition = new SpeechRecognitionClass()
+    const session = createLiveDictationSession({
+      source,
+      recognition
+    })
+
+    recognition.continuous = true
+    recognition.interimResults = true
+    recognition.maxAlternatives = 1
+    recognition.lang = navigator.language || 'en-US'
+
+    liveDictationSession = session
+    speechRecognition = recognition
+
+    recognition.addEventListener('result', (event) => {
+      handleLiveDictationResult(event, session)
+    })
+    recognition.addEventListener('error', (event) => {
+      handleLiveDictationError(event, session)
+
+      if (event.error === 'aborted' || event.error === 'no-speech') {
+        return
+      }
+
+      if (source !== MIC_MODES.AUTO) {
+        return
+      }
+
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        switchAutoModeToCapture('Live dictation is unavailable here. Using auto capture fallback.')
+        return
+      }
+
+      switchAutoModeToCapture(`Live dictation failed: ${event.error}. Using auto capture fallback.`)
+    })
+    recognition.addEventListener('end', () => {
+      handleLiveDictationEnd(session)
+    })
+    renderUi()
+    logRuntime('dictation.live_started', {
+      source
+    })
+
+    try {
+      recognition.start()
+    } catch (error) {
+      if (speechRecognition === recognition && liveDictationSession === session) {
+        speechRecognition = null
+        liveDictationSession = null
+      }
+
+      session.resolveStopped(getLiveDictationSnapshot())
+      renderUi()
+      throw error
+    }
+  }
+
+  function stopLiveDictation({ keepTypedText = true } = {}) {
+    clearLiveRecognitionRestart()
+
+    const session = liveDictationSession
+
+    if (keepTypedText) {
+      commitVisibleInterimDictation()
+    } else {
+      clearBufferedDictationText()
+    }
+
+    if (!session) {
+      renderUi()
+      return Promise.resolve(getLiveDictationSnapshot())
+    }
+
+    session.stopRequested = true
+
+    if (speechRecognition === session.recognition) {
+      speechRecognition = null
+    }
+
+    try {
+      session.recognition.stop()
+    } catch (_error) {
+      // Chromium can throw if stop is called during teardown.
+    }
+
+    logRuntime('dictation.live_stopping', {
+      source: session.source,
+      keepTypedText
+    })
+    renderUi()
+    return waitForLiveDictationToStop(session)
+  }
+
+  function handleLiveDictationResult(event, session) {
+    if (liveDictationSession !== session) {
+      return
+    }
+
+    if (session.source === MIC_MODES.AUTO && (!micState.autoEnabled || micState.mode !== MIC_MODES.AUTO)) {
+      return
+    }
+
+    if (session.source === MIC_MODES.AUTO && (isPlayingAudio || performance.now() < playbackQuietUntil)) {
+      return
+    }
+
+    lastLiveResultAt = performance.now()
+    liveFallbackVoiceSince = 0
+    let nextInterimText = ''
+    let nextBuffer = dictationBuffer
+
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      const result = event.results[index]
+      const transcript = normalizeDictationText(result[0]?.transcript)
+
+      if (!transcript) {
+        continue
+      }
+
+      if (result.isFinal) {
+        const cleared = clearInterimDictation(nextBuffer)
+
+        nextBuffer = cleared.buffer
+        writeAppTextToPty(cleared.eraseText)
+
+        const appended = appendCommittedDictation(nextBuffer, transcript)
+
+        nextBuffer = appended.buffer
+        writeAppTextToPty(appended.insertText)
+      } else {
+        nextInterimText = appendWords(nextInterimText, transcript)
+      }
+    }
+
+    const replaced = replaceInterimDictation(nextBuffer, nextInterimText)
+
+    dictationBuffer = replaced.buffer
+    writeAppTextToPty(replaced.eraseText)
+    writeAppTextToPty(replaced.insertText)
+    logRuntime('dictation.live_result', {
+      source: session.source,
+      interimText: nextInterimText,
+      committedText: normalizeDictationText(nextBuffer.committedText)
+    })
+    renderUi()
+  }
+
+  function handleLiveDictationError(event, session) {
+    const errorCode = event.error || 'unknown'
+
+    logRuntime('dictation.live_error', {
+      source: session.source,
+      error: errorCode
+    })
+
+    if (errorCode !== 'aborted' && errorCode !== 'no-speech') {
+      disableLiveDictationForSession(errorCode)
+    }
+
+    if (
+      session.source !== MIC_MODES.AUTO &&
+      errorCode !== 'aborted' &&
+      errorCode !== 'no-speech'
+    ) {
+      setStatus(
+        'Live preview is unavailable in this runtime. Final transcription will still be injected when capture finishes.',
+        'default',
+        {
+          durationMs: STATUS_NOTICE_MS,
+          persistDuringBusy: true
+        }
+      )
+    }
+  }
+
+  function handleLiveDictationEnd(session) {
+    const shouldRestart =
+      liveDictationSession === session &&
+      session.source === MIC_MODES.AUTO &&
+      shouldUseLiveDictation() &&
+      !session.stopRequested
+
+    commitVisibleInterimDictation()
+
+    if (speechRecognition === session.recognition) {
+      speechRecognition = null
+    }
+
+    if (liveDictationSession === session && !shouldRestart) {
+      liveDictationSession = null
+    }
+
+    const snapshot = getLiveDictationSnapshot()
+    session.resolveStopped(snapshot)
+    renderUi()
+    logRuntime('dictation.live_ended', {
+      source: session.source,
+      restart: shouldRestart,
+      text: snapshot.text
+    })
+
+    if (!shouldRestart) {
+      return
+    }
+
+    clearLiveRecognitionRestart()
+    liveRecognitionRestartTimer = window.setTimeout(() => {
+      liveRecognitionRestartTimer = 0
+      startLiveDictation({ source: session.source }).catch((error) => {
+        setStatus(error.message, 'error')
+      })
+    }, 220)
+  }
+
+  function clearVisibleInterimDictation() {
+    const cleared = clearInterimDictation(dictationBuffer)
+
+    dictationBuffer = cleared.buffer
+    writeAppTextToPty(cleared.eraseText)
+  }
+
+  function commitVisibleInterimDictation() {
+    const committed = commitInterimDictation(dictationBuffer)
+
+    dictationBuffer = committed.buffer
+  }
+
+  function clearLiveRecognitionRestart() {
+    if (!liveRecognitionRestartTimer) {
+      return
+    }
+
+    window.clearTimeout(liveRecognitionRestartTimer)
+    liveRecognitionRestartTimer = 0
+  }
+
+  function handleManualTerminalInput(data) {
+    if (micState.phase === MIC_PHASES.INJECTED && data) {
+      transitionMic({
+        type: 'CLEAR_INJECTED'
+      })
+    }
+
+    if (!data) {
+      return
+    }
+
+    if (
+      liveDictationSession &&
+      liveDictationSession.source !== MIC_MODES.AUTO &&
+      data !== '\r'
+    ) {
+      const consumed = consumeTerminalInput(dictationBuffer, data)
+
+      dictationBuffer = consumed.buffer
+      writeAppTextToPty(consumed.eraseText)
+      return
+    }
+
+    if (!micState.autoEnabled || micState.mode !== MIC_MODES.AUTO) {
+      return
+    }
+
+    const consumed = consumeTerminalInput(dictationBuffer, data)
+
+    dictationBuffer = consumed.buffer
+    writeAppTextToPty(consumed.eraseText)
+  }
+
+  function hasBufferedAutoLiveText() {
+    return Boolean(normalizeDictationText(getVisibleDictationText()))
+  }
+
+  function shouldShowLiveMeter() {
+    if (!analyser) {
+      return false
+    }
+
+    return getMicViewModel(micState).shouldShowMeter
+  }
+
+  function maybeFallbackFromLiveDictation(level, now = performance.now()) {
+    if (!shouldUseLiveDictation()) {
+      liveFallbackVoiceSince = 0
+      return
+    }
+
+    if (level < getAutoGateThresholds().startThreshold) {
+      liveFallbackVoiceSince = 0
+      return
+    }
+
+    if (!liveFallbackVoiceSince) {
+      liveFallbackVoiceSince = now
+    }
+
+    if (now - liveFallbackVoiceSince < LIVE_DICTATION_FALLBACK_MS) {
+      return
+    }
+
+    if (hasRecentLiveDictationActivity(now)) {
+      return
+    }
+
+    switchAutoModeToCapture('Live dictation was not receiving speech. Using auto capture fallback.')
+  }
+
+  function hasRecentLiveDictationActivity(now = performance.now()) {
+    if (dictationBuffer.interimValue) {
+      return true
+    }
+
+    return Boolean(lastLiveResultAt && now - lastLiveResultAt < LIVE_RESULT_GRACE_MS)
+  }
+
+  function switchAutoModeToCapture(message) {
+    if (micState.autoStrategy === AUTO_STRATEGIES.CAPTURE) {
+      if (message) {
+        setStatus(message)
+      }
+      return
+    }
+
+    liveFallbackVoiceSince = 0
+    clearLiveRecognitionRestart()
+
+    if (speechRecognition) {
+      stopLiveDictation({ keepTypedText: true })
+    }
+
+    transitionMic({
+      type: 'AUTO_STRATEGY_SET',
+      strategy: AUTO_STRATEGIES.CAPTURE
+    })
+    setStatus(message || getMicViewModel(micState).statusText, 'default', {
+      durationMs: 3200,
+      persistDuringBusy: true
+    })
+  }
+
+  async function copyTerminalSelection() {
+    const text = getCopyableSelectionText()
+
+    if (!text) {
+      return false
+    }
+
+    await api.writeClipboardText(text)
+    if (terminal.hasSelection()) {
+      terminal.clearSelection()
+    }
+    logRuntime('clipboard.copied', {
+      text
+    })
+    setStatus('Copied selection to clipboard.')
+    focusTerminal()
+    return true
+  }
+
+  function handleGlobalKeyDown(event) {
+    if (event.defaultPrevented) {
+      return
+    }
+
+    if (isUpdatePromptVisible() && !isEditableTarget(event.target)) {
+      handleUpdatePromptKey(event)
+      return
+    }
+
+    if (event.key === 'Escape' && isControlDrawerOpen && !isEditableTarget(event.target)) {
+      event.preventDefault()
+      event.stopPropagation()
+      setControlDrawerOpen(false)
+      focusTerminal()
+      return
+    }
+
+    if (isEditableTarget(event.target)) {
+      return
+    }
+
+    if (isClipboardShortcut(event, 'c') && hasCopyableSelection()) {
+      event.preventDefault()
+      event.stopPropagation()
+      copyTerminalSelection().catch((error) => {
+        setStatus(error.message, 'error')
+      })
+      return
+    }
+
+    if (isClipboardShortcut(event, 'v')) {
+      event.preventDefault()
+      event.stopPropagation()
+      lastShortcutPasteAt = performance.now()
+      pasteClipboardText().catch((error) => {
+        setStatus(error.message, 'error')
+      })
+    }
+  }
+
+  function handleWindowCopy(event) {
+    if (isEditableTarget(event.target)) {
+      return
+    }
+
+    const text = getCopyableSelectionText()
+
+    if (!text) {
+      return
+    }
+
+    if (event.clipboardData) {
+      event.clipboardData.setData('text/plain', text)
+    } else {
+      void api.writeClipboardText(text).catch(() => {})
+    }
+
+    if (terminal.hasSelection()) {
+      terminal.clearSelection()
+    }
+
+    event.preventDefault()
+    setStatus('Copied selection to clipboard.')
+  }
+
+  function handleWindowPaste(event) {
+    if (isEditableTarget(event.target)) {
+      return
+    }
+
+    if (lastShortcutPasteAt && performance.now() - lastShortcutPasteAt < 160) {
+      event.preventDefault()
+      return
+    }
+
+    const text = event.clipboardData?.getData('text/plain')
+
+    if (!text) {
+      return
+    }
+
+    event.preventDefault()
+    writePastedText(text)
+  }
+
+  function handleGlobalPointerDown(event) {
+    if (!isControlDrawerOpen || !controlDrawer) {
+      return
+    }
+
+    const target = event.target instanceof Node ? event.target : null
+
+    if (!target) {
+      return
+    }
+
+    if (
+      controlDrawer.contains(target) ||
+      replyHistoryElement?.contains(target) ||
+      updatePromptElement?.contains(target)
+    ) {
+      return
+    }
+
+    setControlDrawerOpen(false)
+  }
+
+  function isClipboardShortcut(event, key) {
+    return (
+      event.key?.toLowerCase() === key &&
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey &&
+      !event.shiftKey
+    )
+  }
+
+  function isEditableTarget(target) {
+    if (!target || target === terminal.textarea) {
+      return false
+    }
+
+    const element = target instanceof Element ? target : null
+
+    if (!element) {
+      return false
+    }
+
+    return Boolean(element.closest('input, textarea, [contenteditable="true"]'))
+  }
+
+  function hasCopyableSelection() {
+    return Boolean(getCopyableSelectionText())
+  }
+
+  function getCopyableSelectionText() {
+    const terminalText = terminal.getSelection()
+
+    if (terminalText && terminalText.trim()) {
+      return terminalText
+    }
+
+    const browserText = String(window.getSelection?.().toString() || '')
+
+    return browserText.trim() ? browserText : ''
+  }
+
+  function setControlDrawerOpen(isOpen) {
+    isControlDrawerOpen = Boolean(isOpen)
+
+    if (controlDrawer) {
+      controlDrawer.dataset.open = String(isControlDrawerOpen)
+    }
+
+    if (drawerToggleButton) {
+      drawerToggleButton.setAttribute('aria-expanded', String(isControlDrawerOpen))
+    }
+  }
+
+  function updateMicVisualLevel(level) {
+    micButton.style.setProperty('--mic-level', clamp(level, 0, 1).toFixed(3))
+    micButton.dataset.listening = String(
+      clamp(level, 0, 1) > 0.04 && (micState.phase === MIC_PHASES.RECORDING || micState.phase === MIC_PHASES.ARMED)
+    )
+  }
+
+  function submitAutoLiveDictation() {
+    const text = normalizeDictationText(getVisibleDictationText())
+    const verdict = evaluateAutoTranscriptCandidate(text, autoLiveVoiceMetrics, {
+      minVoiceMs: 160,
+      minPeakLevel: 0.022
+    })
+
+    if (!verdict.normalizedText || !verdict.accepted) {
+      if (text && !verdict.accepted) {
+        logRuntime('dictation.live_auto_rejected', {
+          reason: verdict.reason,
+          text: verdict.normalizedText || '',
+          voiceMs: autoLiveVoiceMetrics.voiceMs,
+          peakLevel: autoLiveVoiceMetrics.peakLevel
+        })
+      }
+
+      clearBufferedDictationText()
+      resetAutoVoiceMetrics(autoLiveVoiceMetrics)
+      return false
+    }
+
+    commitVisibleInterimDictation()
+    voiceCandidateSince = 0
+    lastVoiceAt = 0
+    liveFallbackVoiceSince = 0
+    lastLiveResultAt = 0
+    resetAutoVoiceMetrics(autoLiveVoiceMetrics)
+    logRuntime('dictation.live_auto_injected', {
+      text: verdict.normalizedText
+    })
+    setStatus('Transcript injected. Auto listening stays on. Press Enter to run.', 'default', {
+      durationMs: 2200,
+      persistDuringBusy: true
+    })
+    focusTerminal()
+    return true
+  }
+
+  function transitionMic(event) {
+    micState = transitionMicState(micState, event)
+    syncTranscriptionWatchdog()
+    renderUi()
+    maybeStartSpeechPlayback()
+  }
+
+  function clearTranscriptionWatchdog() {
+    if (!transcriptionWatchdogTimer) {
+      return
+    }
+
+    clearTimeout(transcriptionWatchdogTimer)
+    transcriptionWatchdogTimer = 0
+  }
+
+  function syncTranscriptionWatchdog() {
+    clearTranscriptionWatchdog()
+
+    if (micState.phase !== MIC_PHASES.TRANSCRIBING) {
+      return
+    }
+
+    transcriptionWatchdogTimer = window.setTimeout(() => {
+      transcriptionWatchdogTimer = 0
+
+      if (micState.phase !== MIC_PHASES.TRANSCRIBING) {
+        return
+      }
+
+      logRuntime('mic.transcribing_watchdog', {
+        action: 'reset'
+      })
+      transitionMic({
+        type: 'RESET_TO_REST'
+      })
+      setStatus('Transcription took too long. Resetting the mic state.', 'error')
+      focusTerminal()
+    }, TRANSCRIPTION_WATCHDOG_MS)
+  }
+
+  function releaseMicPointerCapture(pointerId = activePointerId) {
+    if (pointerId === null || !micButton.hasPointerCapture(pointerId)) {
+      return
+    }
+
+    try {
+      micButton.releasePointerCapture(pointerId)
+    } catch (_error) {
+      // Chromium can throw when capture is already gone.
+    }
+  }
+
+  function resetAutoTracking() {
+    voiceCandidateSince = 0
+    lastVoiceAt = 0
+    liveFallbackVoiceSince = 0
+    lastLiveResultAt = 0
+    autoNoiseFloor = AUTO_MIN_CONTINUE_THRESHOLD * 0.5
+    resetAutoVoiceMetrics(autoLiveVoiceMetrics)
+  }
+
+  function createAutoVoiceMetrics() {
+    return {
+      voiceMs: 0,
+      peakLevel: 0,
+      lastSampleAt: 0
+    }
+  }
+
+  function cloneAutoVoiceMetrics(metrics) {
+    return {
+      voiceMs: Number.isFinite(metrics?.voiceMs) ? metrics.voiceMs : 0,
+      peakLevel: Number.isFinite(metrics?.peakLevel) ? metrics.peakLevel : 0,
+      lastSampleAt: Number.isFinite(metrics?.lastSampleAt) ? metrics.lastSampleAt : 0
+    }
+  }
+
+  function resetAutoVoiceMetrics(metrics, at = performance.now()) {
+    if (!metrics) {
+      return
+    }
+
+    metrics.voiceMs = 0
+    metrics.peakLevel = 0
+    metrics.lastSampleAt = at
+  }
+
+  function sampleAutoVoiceMetrics(metrics, level, threshold, now = performance.now()) {
+    if (!metrics) {
+      return
+    }
+
+    const previousSampleAt = metrics.lastSampleAt || now
+    const deltaMs = Math.max(0, Math.min(120, now - previousSampleAt))
+
+    metrics.lastSampleAt = now
+
+    if (level < threshold) {
+      return
+    }
+
+    metrics.voiceMs += deltaMs
+    metrics.peakLevel = Math.max(metrics.peakLevel, level)
+  }
+
+  function shouldAttemptAutoTranscription(metrics) {
+    return (
+      Number.isFinite(metrics?.voiceMs) &&
+      Number.isFinite(metrics?.peakLevel) &&
+      (metrics.voiceMs >= 170 || metrics.peakLevel >= 0.024)
+    )
+  }
+
+  function evaluateAutoTranscriptCandidate(text, metrics, overrides = {}) {
+    if (!autoSpeechFilterApi?.evaluateAutoTranscript) {
+      return {
+        accepted: Boolean(text),
+        normalizedText: normalizeDictationText(text),
+        reason: text ? 'no-filter' : 'empty'
+      }
+    }
+
+    return autoSpeechFilterApi.evaluateAutoTranscript(text, metrics, overrides)
+  }
+
+  function isAutoArmed() {
+    return micState.mode === MIC_MODES.AUTO && micState.autoEnabled
+  }
+
+  function isBusyMicPhase(phase) {
+    return BUSY_PHASES.has(phase)
+  }
+
+  function isBusyUiPhase() {
+    return isStartingRecording || isBusyMicPhase(micState.phase) || micState.phase === MIC_PHASES.PLAYING
+  }
+
+  function writeAppTextToPty(text) {
+    if (!text) {
+      return
+    }
+
+    api.writeToPty(text)
+  }
+
+  function focusTerminal() {
+    if (isUpdatePromptVisible()) {
+      return
+    }
+
+    window.requestAnimationFrame(() => {
+      terminal.focus()
+    })
+  }
+
+  function focusUpdatePrompt() {
+    if (!isUpdatePromptVisible()) {
+      return
+    }
+
+    window.requestAnimationFrame(() => {
+      updatePromptConfirmButton?.focus()
+    })
+  }
+
+  function isUpdatePromptVisible() {
+    return Boolean(updatePromptState.visible && updatePromptState.payload)
+  }
+
+  function renderUpdatePrompt() {
+    if (!updatePromptElement) {
+      return
+    }
+
+    const visible = isUpdatePromptVisible()
+
+    updatePromptElement.hidden = !visible
+    updatePromptElement.dataset.visible = String(visible)
+
+    if (!visible) {
+      return
+    }
+
+    const payload = updatePromptState.payload || {}
+
+    if (updatePromptTitleElement) {
+      updatePromptTitleElement.textContent = payload.title || 'Update Available'
+    }
+
+    if (updatePromptMessageElement) {
+      updatePromptMessageElement.textContent = payload.message || ''
+    }
+
+    if (updatePromptMetaElement) {
+      updatePromptMetaElement.textContent =
+        payload.currentLabel && payload.latestLabel
+          ? `${payload.currentLabel} -> ${payload.latestLabel}`
+          : ''
+    }
+
+    if (updatePromptConfirmButton) {
+      updatePromptConfirmButton.textContent = updatePromptState.busy
+        ? 'Updating...'
+        : payload.confirmLabel || 'Yes, update'
+      updatePromptConfirmButton.disabled = updatePromptState.busy
+    }
+
+    if (updatePromptDismissButton) {
+      updatePromptDismissButton.textContent = payload.cancelLabel || 'No'
+      updatePromptDismissButton.disabled = updatePromptState.busy
+    }
+  }
+
+  function handleUpdatePromptKey(event) {
+    if (!isUpdatePromptVisible()) {
+      return
+    }
+
+    if (event.type !== 'keydown') {
+      return
+    }
+
+    const key = String(event.key || '').toLowerCase()
+
+    if (!['y', 'n', 'enter', 'escape'].includes(key)) {
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+
+    if (key === 'y' || key === 'enter') {
+      respondToUpdatePrompt('accept').catch((error) => {
+        setStatus(error.message, 'error')
+      })
+      return
+    }
+
+    respondToUpdatePrompt('dismiss').catch((error) => {
+      setStatus(error.message, 'error')
+    })
+  }
+
+  async function respondToUpdatePrompt(action) {
+    if (!isUpdatePromptVisible() || !api.respondToAppUpdate) {
+      updatePromptState = {
+        visible: false,
+        busy: false,
+        payload: null
+      }
+      renderUpdatePrompt()
+      focusTerminal()
+      return
+    }
+
+    if (action !== 'accept') {
+      await api.respondToAppUpdate('dismiss')
+      updatePromptState = {
+        visible: false,
+        busy: false,
+        payload: null
+      }
+      renderUpdatePrompt()
+      focusTerminal()
+      return
+    }
+
+    if (updatePromptState.busy) {
+      return
+    }
+
+    updatePromptState = {
+      ...updatePromptState,
+      busy: true
+    }
+    renderUpdatePrompt()
+
+    try {
+      await api.respondToAppUpdate('accept')
+    } catch (error) {
+      updatePromptState = {
+        visible: false,
+        busy: false,
+        payload: null
+      }
+      renderUpdatePrompt()
+      focusTerminal()
+      throw error
+    }
+  }
+
+  function logRuntime(type, payload = {}) {
+    if (!api.logRuntimeEvent) {
+      return
+    }
+
+    api.logRuntimeEvent({
+      type,
+      payload
+    })
+  }
+
+  function createLiveDictationSession({ source, recognition }) {
+    let resolveStopped
+
+    const stopPromise = new Promise((resolve) => {
+      resolveStopped = resolve
+    })
+
+    return {
+      source,
+      recognition,
+      stopRequested: false,
+      stopPromise,
+      resolveStopped
+    }
+  }
+
+  function waitForLiveDictationToStop(session) {
+    return Promise.race([
+      session.stopPromise,
+      new Promise((resolve) => {
+        window.setTimeout(() => {
+          resolve(getLiveDictationSnapshot())
+        }, LIVE_STOP_WAIT_MS)
+      })
+    ])
+  }
+
+  function getLiveDictationSnapshot() {
+    return {
+      text: normalizeDictationText(getVisibleDictationText())
+    }
+  }
+
+  function getVisibleDictationText() {
+    return `${dictationBuffer.committedText}${getRenderedInterimText(dictationBuffer)}`
+  }
+
+  function appendCommittedDictationText(text) {
+    const appended = appendCommittedDictation(dictationBuffer, text)
+
+    dictationBuffer = appended.buffer
+    writeAppTextToPty(appended.insertText)
+  }
+
+  function clearBufferedDictationText() {
+    const visibleText = getVisibleDictationText()
+
+    if (visibleText) {
+      writeAppTextToPty('\u007f'.repeat(visibleText.length))
+    }
+
+    dictationBuffer = createDictationBuffer()
+  }
+
+  function finalizeBufferedDictationText(text) {
+    const normalizedText = normalizeDictationText(text)
+    const currentText = normalizeDictationText(getVisibleDictationText())
+
+    if (!normalizedText) {
+      dictationBuffer = createDictationBuffer()
+      return
+    }
+
+    if (currentText && currentText === normalizedText) {
+      commitVisibleInterimDictation()
+      dictationBuffer = createDictationBuffer()
+      return
+    }
+
+    clearBufferedDictationText()
+    writeAppTextToPty(normalizedText)
+    dictationBuffer = createDictationBuffer()
+  }
+
+  function getSignalLevel(samples) {
+    let sumSquares = 0
+
+    for (const sample of samples) {
+      const normalized = (sample - 128) / 128
+      sumSquares += normalized * normalized
+    }
+
+    return Math.sqrt(sumSquares / samples.length)
+  }
+
+  function getAutoListeningLevel(level, data) {
+    const speechBandLevel = getSpeechBandLevel(data)
+
+    return clamp(Math.max(level * 0.95, speechBandLevel * 0.9), 0, 1)
+  }
+
+  function getSpeechBandLevel(data) {
+    if (!data?.length) {
+      return 0
+    }
+
+    const sampleRate = audioContext?.sampleRate || 48000
+    const binWidth = (sampleRate / 2) / data.length
+    const voiceStart = Math.max(1, Math.floor(180 / binWidth))
+    const voiceEnd = Math.min(data.length, Math.ceil(3200 / binWidth))
+    const rumbleEnd = Math.max(1, Math.floor(140 / binWidth))
+    let voiceTotal = 0
+    let voiceCount = 0
+    let rumbleTotal = 0
+    let rumbleCount = 0
+
+    for (let index = voiceStart; index < voiceEnd; index += 1) {
+      voiceTotal += data[index]
+      voiceCount += 1
+    }
+
+    for (let index = 0; index < rumbleEnd; index += 1) {
+      rumbleTotal += data[index]
+      rumbleCount += 1
+    }
+
+    const voiceAverage = voiceCount ? voiceTotal / voiceCount / 255 : 0
+    const rumbleAverage = rumbleCount ? rumbleTotal / rumbleCount / 255 : 0
+
+    return clamp(voiceAverage - rumbleAverage * 0.35, 0, 1)
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value))
+  }
+
+  function pickRecorderOptions() {
+    const mimeTypes = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/ogg;codecs=opus',
+      'audio/mp4'
+    ]
+
+    for (const mimeType of mimeTypes) {
+      if (window.MediaRecorder?.isTypeSupported?.(mimeType)) {
+        return { mimeType }
+      }
+    }
+
+    return undefined
+  }
+
+  function normalizePastedText(text) {
+    return String(text || '').replace(/\r\n/g, '\n')
+  }
+
+  function base64ToUint8Array(base64) {
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index)
+    }
+
+    return bytes
+  }
+
+  function findReplyMessage(messageId) {
+    return replyMessages.find((entry) => entry.id === messageId) || null
+  }
+
+  function getVisibleReplyMessages() {
+    return replyMessages.filter((message) => message.isVisible)
+  }
+
+  function syncReplyHistoryVisibility() {
+    isReplyHistoryVisible = getVisibleReplyMessages().length > 0
+  }
+
+  function clearReplyVisibilityTimer(messageId) {
+    const timerId = replyVisibilityTimers.get(messageId)
+
+    if (!timerId) {
+      return
+    }
+
+    window.clearTimeout(timerId)
+    replyVisibilityTimers.delete(messageId)
+  }
+
+  function clearAllReplyVisibilityTimers() {
+    replyVisibilityTimers.forEach((timerId) => {
+      window.clearTimeout(timerId)
+    })
+    replyVisibilityTimers.clear()
+  }
+
+  function trimStoredReplyHistory() {
+    while (replyMessages.length > REPLY_HISTORY_LIMIT) {
+      const removedMessage = replyMessages.pop()
+
+      if (!removedMessage) {
+        continue
+      }
+
+      clearReplyVisibilityTimer(removedMessage.id)
+    }
+
+    syncReplyHistoryVisibility()
+  }
+
+  function getReplyHistoryItemElement(messageId) {
+    if (!replyHistoryElement) {
+      return null
+    }
+
+    return (
+      Array.from(replyHistoryElement.querySelectorAll('.replyItem')).find(
+        (item) => item.dataset.replyId === messageId
+      ) || null
+    )
+  }
+
+  function showReplyMessage(messageId, { mode = 'live' } = {}) {
+    const message = findReplyMessage(messageId)
+
+    if (!message) {
+      return null
+    }
+
+    message.isVisible = true
+    message.visibilityMode = mode
+    syncReplyHistoryVisibility()
+    return message
+  }
+
+  function dismissReplyMessage(messageId, { reason = 'reply-history-hide', delayMs = 0 } = {}) {
+    const message = findReplyMessage(messageId)
+
+    if (!message) {
+      return
+    }
+
+    clearReplyVisibilityTimer(messageId)
+
+    const dismiss = () => {
+      const item = getReplyHistoryItemElement(messageId)
+
+      if (item) {
+        vaporizeBubble(item, {
+          durationMs: 620,
+          particleSize: 2,
+          travel: 32,
+          reason
+        })
+      }
+
+      message.isVisible = false
+      message.pendingHideAfterPlayback = false
+      syncReplyHistoryVisibility()
+      renderReplyHistory()
+    }
+
+    if (delayMs > 0) {
+      window.setTimeout(dismiss, delayMs)
+      return
+    }
+
+    dismiss()
+  }
+
+  function scheduleReplyMessageHide(
+    messageId,
+    { delayMs = REPLY_HISTORY_AUTO_HIDE_MS, reason = 'reply-history-timeout' } = {}
+  ) {
+    const message = findReplyMessage(messageId)
+
+    if (!message) {
+      return
+    }
+
+    clearReplyVisibilityTimer(messageId)
+    replyVisibilityTimers.set(
+      messageId,
+      window.setTimeout(() => {
+        const currentMessage = findReplyMessage(messageId)
+
+        if (!currentMessage || !currentMessage.isVisible) {
+          clearReplyVisibilityTimer(messageId)
+          return
+        }
+
+        if (activeReplyPlaybackId === messageId || currentMessage.isLoadingAudio) {
+          currentMessage.pendingHideAfterPlayback = true
+          clearReplyVisibilityTimer(messageId)
+          return
+        }
+
+        dismissReplyMessage(messageId, { reason })
+      }, delayMs)
+    )
+  }
+
+  function revealStoredReplyHistory() {
+    if (!replyMessages.length) {
+      return
+    }
+
+    replyMessages.forEach((message) => {
+      showReplyMessage(message.id, {
+        mode: 'history'
+      })
+
+      if (activeReplyPlaybackId === message.id) {
+        message.pendingHideAfterPlayback = true
+        clearReplyVisibilityTimer(message.id)
+        return
+      }
+
+      scheduleReplyMessageHide(message.id)
+    })
+
+    renderReplyHistory()
+  }
+
+  function registerReplyMessage(payload) {
+    if (!upsertReplyMessage(replyMessages, payload)) {
+      return
+    }
+
+    const replyMessage = findReplyMessage(String(payload?.id || '')) || replyMessages[0] || null
+
+    replyMessages.forEach((message) => {
+      if (!replyMessage || message.id !== replyMessage.id) {
+        message.isVisible = false
+        message.pendingHideAfterPlayback = false
+      }
+    })
+    clearAllReplyVisibilityTimers()
+    if (replyMessage) {
+      showReplyMessage(replyMessage.id, {
+        mode: 'live'
+      })
+    }
+    trimStoredReplyHistory()
+    renderReplyHistory()
+  }
+
+  function registerReplyAudio(payload) {
+    if (!attachReplyAudio(replyMessages, payload)) {
+      return
+    }
+
+    const replyMessage = findReplyMessage(String(payload?.id || '')) || replyMessages[0] || null
+
+    if (replyMessage) {
+      showReplyMessage(replyMessage.id, {
+        mode: 'live'
+      })
+    }
+    trimStoredReplyHistory()
+    renderReplyHistory()
+  }
+
+  function renderReplyHistory() {
+    const visibleReplyMessages = getVisibleReplyMessages()
+
+    renderReplyHistoryView({
+      replyHistoryElement,
+      replyHistoryToggleButton,
+      replyMessages: visibleReplyMessages,
+      shouldShow: shouldShowReplyHistory(visibleReplyMessages, isReplyHistoryVisible, false),
+      activeReplyPlaybackId,
+      onReplyButtonClick: (message) => {
+        if (activeReplyPlaybackId === message.id) {
+          stopSpeechPlayback({
+            clearQueue: true
+          })
+          focusTerminal()
+          return
+        }
+
+        playReplyMessage(message.id).catch((error) => {
+          setStatus(error.message, 'error')
+        })
+      }
+    })
+  }
+
+  async function playReplyMessage(messageId) {
+    const message = replyMessages.find((entry) => entry.id === messageId)
+
+    if (!message || message.isLoadingAudio) {
+      return
+    }
+
+    try {
+      showReplyMessage(message.id, {
+        mode: 'history'
+      })
+      message.pendingHideAfterPlayback = true
+      clearReplyVisibilityTimer(message.id)
+      message.isLoadingAudio = !message.audioBase64
+      renderReplyHistory()
+
+      if (currentPlaybackHandle || playbackQueue.length) {
+        stopSpeechPlayback({
+          clearQueue: true
+        })
+      }
+
+      if (!message.audioBase64) {
+        const payload = await api.previewSpeech({
+          text: message.text
+        })
+
+        if (!payload.audioBase64) {
+          throw new Error('The reply TTS returned no audio.')
+        }
+
+        registerReplyAudio({
+          id: message.id,
+          text: message.text,
+          audioBase64: payload.audioBase64,
+          mimeType: payload.mimeType,
+          provider: payload.provider
+        })
+      }
+
+      enqueueSpeech({
+        id: message.id,
+        text: message.text,
+        audioBase64: message.audioBase64,
+        mimeType: message.mimeType || 'audio/mpeg',
+        provider: message.provider || ''
+      }, {
+        force: true
+      })
+    } finally {
+      message.isLoadingAudio = false
+      renderReplyHistory()
+      focusTerminal()
+    }
+  }
+
+  function dismissReplyHistory() {
+    const visibleReplyMessages = getVisibleReplyMessages()
+
+    if (!visibleReplyMessages.length) {
+      syncReplyHistoryVisibility()
+      renderReplyHistory()
+      return
+    }
+
+    visibleReplyMessages.forEach((message, index) => {
+      dismissReplyMessage(message.id, {
+        reason: 'reply-history-hide',
+        delayMs: index * 34
+      })
+    })
+  }
+
+  function vaporizeBubble(element, options = {}) {
+    if (!vaporizeApi?.vaporizeElement || !(element instanceof Element)) {
+      return
+    }
+
+    logRuntime('ui.vaporize', {
+      tagName: element.tagName.toLowerCase(),
+      className: element.className || '',
+      durationMs: options.durationMs || 0,
+      particleSize: options.particleSize || 0,
+      travel: options.travel || 0,
+      gravity: options.gravity || 0,
+      reason: options.reason || ''
+    })
+    vaporizeApi
+      .vaporizeElement(element, options)
+      .then((result) => {
+        logRuntime('ui.vaporize_result', {
+          ok: Boolean(result?.ok),
+          method: result?.method || '',
+          particleCount: Number(result?.particleCount || 0),
+          reason: options.reason || '',
+          errorMessage: result?.errorMessage || ''
+        })
+      })
+      .catch((error) => {
+        logRuntime('ui.vaporize_result', {
+          ok: false,
+          method: 'error',
+          particleCount: 0,
+          reason: options.reason || '',
+          errorMessage: error?.message || String(error || '')
+        })
+      })
+  }
+
+  async function applyAutoReplySpeechEnabled(
+    enabled,
+    { persist = true, stopPlayback = false } = {}
+  ) {
+    isAutoReplySpeechEnabled = Boolean(enabled)
+
+    if (persist) {
+      writeStoredBoolean(AUTO_REPLY_SPEECH_STORAGE_KEY, isAutoReplySpeechEnabled)
+    }
+
+    if (stopPlayback && !isAutoReplySpeechEnabled) {
+      stopSpeechPlayback({
+        clearQueue: true
+      })
+    }
+
+    renderUi()
+
+    if (!api.setAutoReplySpeechEnabled) {
+      return
+    }
+
+    await api.setAutoReplySpeechEnabled(isAutoReplySpeechEnabled)
+    logRuntime('speech.auto_reply_toggled', {
+      enabled: isAutoReplySpeechEnabled
+    })
+  }
+
+  function readStoredBoolean(key, fallbackValue) {
+    try {
+      const rawValue = window.localStorage?.getItem(key)
+
+      if (rawValue === 'true') {
+        return true
+      }
+
+      if (rawValue === 'false') {
+        return false
+      }
+    } catch (_error) {
+      // Ignore storage failures and use the current session default.
+    }
+
+    return fallbackValue
+  }
+
+  function writeStoredBoolean(key, value) {
+    try {
+      window.localStorage?.setItem(key, value ? 'true' : 'false')
+    } catch (_error) {
+      // Ignore storage failures and keep the current session value.
+    }
+  }
+
+  function debounce(fn, delay) {
+    let timeoutId = null
+
+    return (...args) => {
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+      }
+
+      timeoutId = setTimeout(() => {
+        fn(...args)
+      }, delay)
+    }
+  }
+})()
