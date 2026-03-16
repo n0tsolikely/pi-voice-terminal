@@ -1,5 +1,6 @@
 .env
-.local-whisper-venv/
+.local-stt/
+.local-stt-venv/
 __pycache__/
 *.pyc
 node_modules/

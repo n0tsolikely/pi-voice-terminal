@@ -1,8 +1,8 @@
 const { app, BrowserWindow, clipboard, ipcMain, session } = require('electron')
-const fs = require('node:fs')
 const path = require('node:path')
 const pty = require('node-pty')
 const packageManifest = require('./package.json')
+const { loadDotEnv, resolveAppPath } = require('./lib/app-env')
 const { AppUpdater, buildUpdatePrompt } = require('./lib/app-updater')
 const {
   normalizeClipboardText,
@@ -40,11 +40,14 @@ const TTS_VOICE = process.env.OPENAI_TTS_VOICE || 'alloy'
 const TTS_FORMAT = 'mp3'
 const STT_PROVIDER = process.env.STT_PROVIDER || STT_PROVIDERS.AUTO
 const TTS_PROVIDER = process.env.TTS_PROVIDER || TTS_PROVIDERS.AUTO
+const IS_SMOKE_TEST = process.env.PI_VOICE_TERMINAL_SMOKE_TEST === '1'
+const SKIP_UPDATE_CHECK = process.env.PI_VOICE_TERMINAL_SKIP_UPDATE_CHECK === '1'
 const LOCAL_STT_LANGUAGE = process.env.LOCAL_STT_LANGUAGE || 'en'
 const PIPER_BIN = process.env.PIPER_BIN || 'piper'
 const PIPER_VOICE_MODEL = process.env.PIPER_VOICE_MODEL || ''
 const ESPEAK_VOICE = process.env.ESPEAK_VOICE || 'en-us'
 const VOSK_MODEL_PATH = resolveAppPath(
+  __dirname,
   process.env.VOSK_MODEL_PATH,
   path.join(__dirname, '.local-stt', 'models', 'vosk-model-small-en-us-0.15')
 )
@@ -58,6 +61,7 @@ let isAppQuitting = false
 let closeVaporizeTimeoutId = null
 let isCloseVaporizePending = false
 let isCloseVaporizeForced = false
+let hasScheduledSmokeTestExit = false
 const statusNoticeKeys = new Set()
 const runtimeLogger = new RuntimeLogger({
   baseDir: __dirname
@@ -142,7 +146,10 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'index.html'))
   mainWindow.webContents.once('did-finish-load', () => {
     announceInitialSpeechMode()
-    warmLocalSttRuntime()
+
+    if (!IS_SMOKE_TEST) {
+      warmLocalSttRuntime()
+    }
   })
   windowLogger.log('window.created', {
     width: 1440,
@@ -212,6 +219,11 @@ app.whenReady().then(() => {
   ipcMain.handle('pty:start', async (_event, dimensions) => {
     terminalSession?.start(normalizePtyDimensions(dimensions))
     queueStartupUpdateCheck()
+
+    if (IS_SMOKE_TEST) {
+      scheduleSmokeTestExit()
+    }
+
     return { ok: true }
   })
 
@@ -615,7 +627,7 @@ function announceInitialSpeechMode() {
 }
 
 function queueStartupUpdateCheck() {
-  if (hasCheckedForAppUpdate) {
+  if (SKIP_UPDATE_CHECK || hasCheckedForAppUpdate) {
     return
   }
 
@@ -661,6 +673,23 @@ function sendStatus(message) {
   }
 
   terminalSession?.send('app:status', { message })
+}
+
+function scheduleSmokeTestExit() {
+  if (hasScheduledSmokeTestExit) {
+    return
+  }
+
+  hasScheduledSmokeTestExit = true
+  runtimeLogger.log('app.smoke_test_ready', {
+    shell: process.env.PI_SHELL || process.env.SHELL || '/bin/bash'
+  })
+
+  setTimeout(() => {
+    if (!isAppQuitting) {
+      app.quit()
+    }
+  }, 800)
 }
 
 function sendStatusOnce(key, message) {
@@ -746,53 +775,4 @@ function isAudioMediaPermission(permission, details = {}) {
   }
 
   return details.mediaType === 'audio'
-}
-
-function loadDotEnv(dotEnvPath) {
-  if (!fs.existsSync(dotEnvPath)) {
-    return
-  }
-
-  const raw = fs.readFileSync(dotEnvPath, 'utf8')
-
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim()
-
-    if (!trimmed || trimmed.startsWith('#')) {
-      continue
-    }
-
-    const separatorIndex = trimmed.indexOf('=')
-
-    if (separatorIndex === -1) {
-      continue
-    }
-
-    const key = trimmed.slice(0, separatorIndex).trim()
-
-    if (!key || process.env[key]) {
-      continue
-    }
-
-    let value = trimmed.slice(separatorIndex + 1).trim()
-
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1)
-    }
-
-    process.env[key] = value
-  }
-}
-
-function resolveAppPath(value, fallbackPath) {
-  const normalized = String(value || '').trim()
-
-  if (!normalized) {
-    return fallbackPath
-  }
-
-  return path.isAbsolute(normalized) ? normalized : path.join(__dirname, normalized)
 }

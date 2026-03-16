@@ -1,74 +1,85 @@
+#!/usr/bin/env node
+
 const fs = require('node:fs')
 const path = require('node:path')
-const { execSync } = require('node:child_process')
+const { spawnSync } = require('node:child_process')
 
-function run(cmd) {
-  try {
-    return execSync(cmd, { stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim()
-  } catch {
-    return null
+const { loadDotEnv, resolveAppPath } = require('../lib/app-env')
+
+const repoRoot = path.join(__dirname, '..')
+const envPath = path.join(repoRoot, '.env')
+const pkgPath = path.join(repoRoot, 'package.json')
+const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
+
+loadDotEnv(envPath)
+
+const runtimeDir = path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-runtime`)
+const latestRuntimeLog = path.join(runtimeDir, 'latest.jsonl')
+const defaultModelPath = path.join(repoRoot, '.local-stt', 'models', 'vosk-model-small-en-us-0.15')
+const configuredModelPath = resolveAppPath(repoRoot, process.env.VOSK_MODEL_PATH, defaultModelPath)
+const configuredPythonPath = resolveAppPath(
+  repoRoot,
+  process.env.LOCAL_STT_PYTHON,
+  path.join(repoRoot, '.local-stt-venv', 'bin', 'python')
+)
+const configuredPiperModel = resolveAppPath(repoRoot, process.env.PIPER_VOICE_MODEL, '')
+const configuredPiperBin = String(process.env.PIPER_BIN || 'piper').trim() || 'piper'
+const configuredEspeakVoice = String(process.env.ESPEAK_VOICE || 'en-us').trim() || 'en-us'
+
+let warnCount = 0
+let failCount = 0
+
+function run(command, args = []) {
+  const result = spawnSync(command, args, {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      PYTHONIOENCODING: 'utf-8'
+    },
+    encoding: 'utf8'
+  })
+
+  return {
+    ok: result.status === 0,
+    stdout: String(result.stdout || '').trim(),
+    stderr: String(result.stderr || '').trim(),
+    status: result.status,
+    error: result.error || null
   }
 }
 
 function commandExists(name) {
-  if (process.platform === 'win32') {
-    return Boolean(run(`where ${name}`))
-  }
-  return Boolean(run(`command -v ${name}`))
+  return run('bash', ['-lc', `command -v ${shellQuote(name)}`]).ok
 }
 
-function log(label, message) {
-  process.stdout.write(`[${label}] ${message}\n`)
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
 
-function findRepoRoot(startDir) {
-  let dir = startDir
-  for (let i = 0; i < 6; i += 1) {
-    const candidate = path.join(dir, 'package.json')
-    if (fs.existsSync(candidate)) {
-      try {
-        const pkg = JSON.parse(fs.readFileSync(candidate, 'utf8'))
-        if (pkg.name === 'pi-voice-terminal') {
-          return dir
-        }
-      } catch {
-        return dir
-      }
-    }
-    const parent = path.dirname(dir)
-    if (parent === dir) break
-    dir = parent
-  }
-  return null
+function log(level, message) {
+  process.stdout.write(`[${level}] ${message}\n`)
 }
 
-function parseEnvFile(envPath) {
-  const map = new Map()
-  if (!fs.existsSync(envPath)) {
-    return map
-  }
-  const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/)
-  for (const rawLine of lines) {
-    const line = rawLine.trim()
-    if (!line || line.startsWith('#')) continue
-    const index = line.indexOf('=')
-    if (index === -1) continue
-    const key = line.slice(0, index).trim()
-    let value = line.slice(index + 1).trim()
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1)
-    }
-    map.set(key, value)
-  }
-  return map
+function ok(message) {
+  log('OK', message)
+}
+
+function warn(message) {
+  warnCount += 1
+  log('WARN', message)
+}
+
+function fail(message) {
+  failCount += 1
+  log('FAIL', message)
 }
 
 function isPlaceholderKey(value) {
-  if (!value) return true
-  const lowered = value.toLowerCase()
+  if (!value) {
+    return true
+  }
+
+  const lowered = String(value).toLowerCase()
   return (
     lowered.includes('your_key_here') ||
     lowered.includes('replace_me') ||
@@ -76,290 +87,160 @@ function isPlaceholderKey(value) {
   )
 }
 
-function hasStartScript(pkg) {
-  return Boolean(pkg?.scripts?.start)
-}
+ok(`Repo detected: ${repoRoot}`)
+ok(`Package detected: ${pkg.name}@${pkg.version}`)
 
-function hasRebuildScript(pkg) {
-  return Boolean(pkg?.scripts && pkg.scripts['rebuild:native'])
-}
-
-function hasNodePtyDependency(pkg) {
-  return Boolean(pkg?.dependencies?.['node-pty'] || pkg?.optionalDependencies?.['node-pty'])
-}
-
-function checkNodePtyUsable(repoRoot) {
-  const validator = path.join(repoRoot, 'scripts', 'check-node-pty.js')
-  if (!fs.existsSync(validator)) {
-    return null
-  }
-
-  const output = run(`node "${validator}" --quiet`)
-  return output !== null
-}
-
-function getPythonInfo() {
-  const py311 = run('py -3.11 --version')
-  if (py311) {
-    return { ok: true, label: py311 }
-  }
-  const python = run('python --version') || run('python3 --version')
-  if (python) {
-    return { ok: true, label: python }
-  }
-  return { ok: false, label: null }
-}
-
-function getNpmInfo() {
-  if (process.env.npm_lifecycle_event || process.env.npm_command) {
-    return {
-      ok: true,
-      label: 'available via current npm script context'
-    }
-  }
-
-  const npmExecPath = process.env.npm_execpath
-  if (npmExecPath && fs.existsSync(npmExecPath)) {
-    const output = run(`"${process.execPath}" "${npmExecPath}" -v`)
-    if (output) {
-      return { ok: true, label: output }
-    }
-  }
-
-  const npmVersion = run('npm -v')
-  if (npmVersion) {
-    return { ok: true, label: npmVersion }
-  }
-
-  return { ok: false, label: null }
-}
-
-function detectVsCppTools() {
-  const programFilesX86 = process.env['ProgramFiles(x86)']
-  if (programFilesX86) {
-    const vswherePath = path.join(programFilesX86, 'Microsoft Visual Studio', 'Installer', 'vswhere.exe')
-    if (fs.existsSync(vswherePath)) {
-      const output = run(`"${vswherePath}" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`)
-      if (output) {
-        return { detected: true, detail: output, source: 'vswhere' }
-      }
-    }
-  }
-
-  if (commandExists('vswhere')) {
-    const output = run('vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath')
-    if (output) {
-      return { detected: true, detail: output, source: 'vswhere' }
-    }
-  }
-
-  if (!programFilesX86) {
-    return { detected: false, detail: null, source: null }
-  }
-
-  const vsRoot = path.join(programFilesX86, 'Microsoft Visual Studio', '2022')
-  const editions = ['BuildTools', 'Community', 'Professional', 'Enterprise']
-  for (const edition of editions) {
-    const msvcRoot = path.join(vsRoot, edition, 'VC', 'Tools', 'MSVC')
-    if (!fs.existsSync(msvcRoot)) continue
-    let versions = []
-    try {
-      versions = fs.readdirSync(msvcRoot)
-    } catch {
-      versions = []
-    }
-    for (const version of versions) {
-      const clPath = path.join(msvcRoot, version, 'bin', 'Hostx64', 'x64', 'cl.exe')
-      if (fs.existsSync(clPath)) {
-        return { detected: true, detail: clPath, source: 'cl.exe' }
-      }
-    }
-  }
-
-  return { detected: false, detail: null, source: null }
-}
-
-const repoRoot = findRepoRoot(process.cwd()) || process.cwd()
-const pkgPath = path.join(repoRoot, 'package.json')
-const hasPackage = fs.existsSync(pkgPath)
-const pkg = hasPackage ? JSON.parse(fs.readFileSync(pkgPath, 'utf8')) : null
-const runtimeDir = path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-runtime`)
-const latestRuntimeLog = path.join(runtimeDir, 'latest.jsonl')
-
-let warnCount = 0
-let failCount = 0
-
-if (hasPackage) {
-  log('OK', `Repo detected: ${repoRoot}`)
+if (process.platform === 'linux') {
+  ok(`Platform detected: ${process.platform}`)
 } else {
-  warnCount += 1
-  log('WARN', `package.json not found. Run this from the repo root. Using ${repoRoot}`)
+  fail(`Platform detected: ${process.platform}. Pi Voice Terminal must run on Linux.`)
 }
 
-if (process.platform === 'win32') {
-  log('OK', 'Platform detected: win32')
+if (process.arch === 'arm64') {
+  ok(`Architecture detected: ${process.arch}`)
 } else {
-  warnCount += 1
-  log('WARN', `Platform detected: ${process.platform}. This app runs on Windows and launches wsl.exe from there.`)
+  warn(`Architecture detected: ${process.arch}. Raspberry Pi OS / Debian arm64 is the supported baseline.`)
 }
 
-log('OK', `Node detected: ${process.version}`)
+ok(`Node detected: ${process.version}`)
 
-const npmInfo = getNpmInfo()
-if (npmInfo.ok) {
-  log('OK', `npm detected: ${npmInfo.label}`)
+const npmVersion = run('npm', ['-v'])
+if (npmVersion.ok) {
+  ok(`npm detected: ${npmVersion.stdout}`)
 } else {
-  failCount += 1
-  log('FAIL', 'npm not found on PATH')
+  fail('npm not found on PATH')
 }
 
-const gitVersion = run('git --version')
-if (gitVersion) {
-  log('OK', 'Git detected')
+const gitVersion = run('git', ['--version'])
+if (gitVersion.ok) {
+  ok(gitVersion.stdout)
 } else {
-  failCount += 1
-  log('FAIL', 'Git not found on PATH')
+  fail('git not found on PATH')
 }
 
-const pythonInfo = getPythonInfo()
-if (pythonInfo.ok) {
-  log('OK', `Python detected: ${pythonInfo.label}`)
+const pythonVersion = run('python3', ['--version'])
+if (pythonVersion.ok) {
+  ok(`Python detected: ${pythonVersion.stdout}`)
 } else {
-  warnCount += 1
-  log('WARN', 'Python not found. Local Whisper fallback setup will be unavailable until Python 3.11 is installed.')
+  fail('python3 not found on PATH')
 }
 
-const wslSystemPath = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'wsl.exe')
-const wslExists = fs.existsSync(wslSystemPath) || commandExists('wsl')
-if (wslExists) {
-  log('OK', 'WSL detected')
-} else {
-  failCount += 1
-  log('FAIL', 'WSL not found. Run: wsl --install (then reboot)')
-}
-
-const vsCpp = detectVsCppTools()
-if (vsCpp.detected) {
-  log('OK', `Visual Studio C++ build tools detected (${vsCpp.source})`)
-} else {
-  warnCount += 1
-  log('WARN', 'Visual Studio C++ build tools not detected. Install Visual Studio Build Tools with Desktop development with C++ if node-pty fails to build.')
-}
-
-const envPath = path.join(repoRoot, '.env')
 if (fs.existsSync(envPath)) {
-  log('OK', '.env exists')
+  ok(`.env detected: ${envPath}`)
 } else {
-  warnCount += 1
-  log('WARN', '.env missing')
+  warn('.env is missing. Copy .env.example or run npm run setup:raspi.')
 }
 
-const envVars = parseEnvFile(envPath)
-const envKey = envVars.get('OPENAI_API_KEY') || process.env.OPENAI_API_KEY || ''
-const hasValidOpenAiKey = Boolean(envKey) && !isPlaceholderKey(envKey)
-if (!envKey) {
-  warnCount += 1
-  log('WARN', 'OPENAI_API_KEY missing')
-} else if (isPlaceholderKey(envKey)) {
-  warnCount += 1
-  log('WARN', 'OPENAI_API_KEY is a placeholder value')
+const apiKey = process.env.OPENAI_API_KEY || ''
+if (apiKey && !isPlaceholderKey(apiKey)) {
+  ok('OPENAI_API_KEY is configured')
 } else {
-  log('OK', 'OPENAI_API_KEY present')
+  warn('OPENAI_API_KEY is missing or still a placeholder. Remote OpenAI STT/TTS will be unavailable.')
 }
 
-const launchBat = path.join(repoRoot, 'launch-pi-voice-terminal.bat')
-if (fs.existsSync(launchBat)) {
-  log('OK', 'launch-pi-voice-terminal.bat found')
+if (fs.existsSync(path.join(repoRoot, 'requirements.local-stt.txt'))) {
+  ok('Local Vosk requirements file is present')
 } else {
-  warnCount += 1
-  log('WARN', 'launch-pi-voice-terminal.bat missing')
+  fail('requirements.local-stt.txt is missing')
 }
 
-const nodeModulesPath = path.join(repoRoot, 'node_modules')
-if (fs.existsSync(nodeModulesPath)) {
-  log('OK', 'node_modules present')
+if (fs.existsSync(configuredPythonPath)) {
+  ok(`Local STT virtualenv python detected: ${configuredPythonPath}`)
 } else {
-  failCount += 1
-  log('FAIL', 'node_modules missing (run npm install)')
+  warn(`Local STT virtualenv python not found at ${configuredPythonPath}`)
 }
 
-const nodePtyBinary = path.join(repoRoot, 'node_modules', 'node-pty', 'build', 'Release', 'pty.node')
-if (hasNodePtyDependency(pkg)) {
-  const nodePtyUsable = checkNodePtyUsable(repoRoot)
-  if (nodePtyUsable) {
-    log('OK', 'node-pty loads correctly')
-  } else if (fs.existsSync(nodePtyBinary)) {
-    warnCount += 1
-    log('WARN', 'node-pty binary exists, but load validation did not pass')
+if (fs.existsSync(configuredModelPath)) {
+  ok(`Vosk model detected: ${configuredModelPath}`)
+} else {
+  fail(`Vosk model path missing: ${configuredModelPath}`)
+}
+
+const nodePtyCheck = run('node', ['scripts/check-node-pty.js', '--quiet'])
+if (nodePtyCheck.ok) {
+  ok('node-pty loads successfully')
+} else {
+  fail(`node-pty failed to load. Run npm run rebuild:native. ${nodePtyCheck.stderr || nodePtyCheck.stdout}`.trim())
+}
+
+const ffmpegVersion = run('ffmpeg', ['-version'])
+if (ffmpegVersion.ok) {
+  ok(`ffmpeg detected: ${ffmpegVersion.stdout.split('\n')[0]}`)
+} else {
+  fail('ffmpeg not found on PATH')
+}
+
+const arecordVersion = run('arecord', ['--version'])
+if (arecordVersion.ok) {
+  ok(`arecord detected: ${arecordVersion.stdout.split('\n')[0]}`)
+} else {
+  fail('arecord not found on PATH')
+}
+
+const aplayVersion = run('aplay', ['--version'])
+if (aplayVersion.ok) {
+  ok(`aplay detected: ${aplayVersion.stdout.split('\n')[0]}`)
+} else {
+  fail('aplay not found on PATH')
+}
+
+const arecordDevices = run('arecord', ['-l'])
+if (arecordDevices.ok) {
+  ok('ALSA capture devices are visible')
+} else {
+  warn(`No ALSA capture device detected. ${arecordDevices.stderr || arecordDevices.stdout}`.trim())
+}
+
+const espeakVersion = run('espeak-ng', ['--version'])
+if (espeakVersion.ok) {
+  ok(`espeak-ng detected: ${espeakVersion.stdout.split('\n')[0]}`)
+} else {
+  fail('espeak-ng not found on PATH')
+}
+
+const piperVersion = run(configuredPiperBin, ['--help'])
+if (configuredPiperModel && fs.existsSync(configuredPiperModel)) {
+  if (piperVersion.ok) {
+    ok(`Piper is configured with model: ${configuredPiperModel}`)
   } else {
-    failCount += 1
-    log('FAIL', 'node-pty native module missing (run npm run rebuild:native)')
+    warn(`Piper model is configured but ${configuredPiperBin} is unavailable`)
   }
+} else if (piperVersion.ok) {
+  warn('Piper is installed but PIPER_VOICE_MODEL is not configured. Local TTS will use espeak-ng unless you set a Piper voice.')
 } else {
-  warnCount += 1
-  log('WARN', 'node-pty dependency not detected in package.json')
+  warn('Piper is not configured. This is fine if you plan to use OpenAI TTS or espeak-ng.')
 }
 
-const whisperReq = path.join(repoRoot, 'requirements.local-whisper.txt')
-if (fs.existsSync(whisperReq)) {
-  log('INFO', 'Local Whisper requirements present')
+ok(`espeak-ng voice configured: ${configuredEspeakVoice}`)
+
+const pactlInfo = run('pactl', ['info'])
+if (pactlInfo.ok) {
+  ok('PulseAudio / PipeWire Pulse compatibility is reachable')
+} else if (commandExists('wpctl') && run('wpctl', ['status']).ok) {
+  ok('PipeWire is reachable via wpctl')
 } else {
-  log('INFO', 'Local Whisper requirements not found')
+  warn('Neither pactl nor wpctl reported a working audio session. Playback/capture may fail outside a desktop session.')
 }
 
-const venvWin = path.join(repoRoot, '.local-whisper-venv', 'Scripts', 'python.exe')
-const venvPosix = path.join(repoRoot, '.local-whisper-venv', 'bin', 'python')
-const localWhisperVenvPresent = fs.existsSync(venvWin) || fs.existsSync(venvPosix)
-if (localWhisperVenvPresent) {
-  log('OK', 'Local Whisper venv present')
+if (pkg.scripts?.['setup:raspi']) {
+  ok('setup:raspi script is defined')
 } else {
-  warnCount += 1
-  log('WARN', 'Local Whisper venv missing')
+  fail('setup:raspi script is missing from package.json')
 }
 
-if (!hasValidOpenAiKey && !localWhisperVenvPresent) {
-  failCount += 1
-  log('FAIL', 'No speech-to-text path is ready. OPENAI_API_KEY is not usable and the local Whisper venv is missing.')
-} else if (!hasValidOpenAiKey && !pythonInfo.ok) {
-  failCount += 1
-  log('FAIL', 'No speech-to-text recovery path is available. Install Python 3.11 for local Whisper or configure a valid OPENAI_API_KEY.')
-}
-
-if (fs.existsSync(runtimeDir)) {
-  log('OK', `Runtime log dir present: ${runtimeDir}`)
+if (pkg.scripts?.['package:arm64']) {
+  ok('package:arm64 script is defined')
 } else {
-  warnCount += 1
-  log('WARN', `Runtime log dir missing: ${runtimeDir}`)
+  fail('package:arm64 script is missing from package.json')
 }
 
 if (fs.existsSync(latestRuntimeLog)) {
-  log('OK', `Latest runtime log found: ${latestRuntimeLog}`)
+  ok(`Latest runtime log detected: ${latestRuntimeLog}`)
 } else {
-  warnCount += 1
-  log('WARN', `Latest runtime log missing: ${latestRuntimeLog}`)
+  warn(`No runtime log has been written yet: ${latestRuntimeLog}`)
 }
 
-log('INFO', 'Microphone checks require launching the Electron app because they are runtime permission/device checks.')
+log('INFO', `Warnings: ${warnCount}`)
+log('INFO', `Failures: ${failCount}`)
 
-if (hasStartScript(pkg)) {
-  log('OK', 'package.json start script found')
-} else {
-  failCount += 1
-  log('FAIL', 'package.json start script missing')
-}
-
-if (hasRebuildScript(pkg)) {
-  log('OK', 'rebuild:native script found')
-} else {
-  warnCount += 1
-  log('WARN', 'rebuild:native script missing')
-}
-
-if (failCount > 0) {
-  log('FAIL', `Doctor finished with ${failCount} failure(s) and ${warnCount} warning(s).`)
-  process.exitCode = 1
-} else if (warnCount > 0) {
-  log('WARN', `Doctor finished with ${warnCount} warning(s).`)
-} else {
-  log('OK', 'Doctor finished without warnings')
-}
+process.exitCode = failCount > 0 ? 1 : 0

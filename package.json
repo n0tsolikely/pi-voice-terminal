@@ -9,12 +9,19 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
+    "run": "bash scripts/run.sh",
     "doctor": "node scripts/doctor.js",
-    "install:local-whisper": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\install.ps1 -LocalWhisperOnly -NoLaunch",
+    "setup:raspi": "bash scripts/setup-raspi.sh",
     "test": "node --test",
     "test:unit": "node --test",
     "postinstall": "node scripts/check-node-pty.js --quiet || npm run rebuild:native",
-    "rebuild:native": "electron-rebuild -f -w node-pty"
+    "rebuild:native": "electron-rebuild -f -w node-pty",
+    "package:arm64": "electron-packager . pi-voice-terminal --platform=linux --arch=arm64 --overwrite --out=dist",
+    "verify:shell": "node scripts/verify-shell.js",
+    "verify:mic": "node scripts/verify-mic.js",
+    "verify:tts": "node scripts/verify-tts.js",
+    "verify:app": "node scripts/verify-app.js",
+    "verify:modes": "node scripts/verify-modes.js"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
@@ -22,6 +29,7 @@
     "xterm": "^5.3.0"
   },
   "devDependencies": {
+    "@electron/packager": "^18.4.4",
     "@electron/rebuild": "^3.7.1",
     "electron": "^35.3.0"
   }
