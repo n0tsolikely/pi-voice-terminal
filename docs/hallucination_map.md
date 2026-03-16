@@ -1,53 +1,42 @@
 # Hallucination Map
 
-This file documents common wrong assumptions that AI tools or new contributors may make about this repository.
+This file documents wrong assumptions people or tools are likely to make about this repo.
 
 ## Common Wrong Assumptions
 
-- `This is a Linux desktop app.`
-  False. It is Windows-first and launches `wsl.exe` from Windows through Electron.
+- `This is still a WSL wrapper.`
+  False. The app launches a native Linux shell through `node-pty`.
 
-- `This app runs directly inside WSL.`
-  False. Git work may happen in WSL, but the actual app runtime is the Windows Electron app.
-
-- `The runtime logs live inside the repo.`
-  False. They are written to a sibling folder named `pi-voice-terminal-runtime`.
-
-- `Speech replay is just TTS of whatever appears in the terminal.`
-  False. The app tries to isolate assistant replies and avoid tool chatter, shell prompts, and user echo.
-
-- `node-pty` is optional.`
-  False. It is a core native dependency for the real terminal experience.
+- `This repo runs only on Windows.`
+  False. The target platform is Raspberry Pi OS / Debian Linux.
 
 - `Python powers the whole app.`
-  False. The app is primarily Node/Electron. Python is mainly for local Whisper fallback.
+  False. The app is primarily Node/Electron. Python exists for the local Vosk worker only.
 
 - `OpenAI is required.`
-  False. OpenAI improves STT/TTS, but local Whisper and local Windows TTS can be used as fallbacks.
+  False. Local Vosk plus local Linux TTS can run without OpenAI.
 
-- `The launch batch file might redirect to another hidden install by default.`
-  False. `launch-pi-voice-terminal.bat` launches the repo folder it lives in.
+- `Piper is bundled and ready by default.`
+  False. Piper is supported, but you must supply a binary and voice model.
 
-- `Reply bubbles are just decorative UI.`
-  False. They are part of the response replay system and allow replaying spoken agent replies.
+- `Runtime logs live inside the repo.`
+  False. They are written to a sibling folder named `pi-voice-terminal-runtime`.
 
-- `If the terminal prints it, it should be spoken.`
-  False. A large part of the architecture exists specifically to prevent that.
+- `Speech replay is just TTS of whatever the terminal prints.`
+  False. The app tries hard to isolate assistant replies and reject tool chatter, shell prompts, and user echo.
 
-## Common Tool-Specific Misreads
+- `node-pty` is optional.`
+  False. It is the core terminal backend.
 
-- `Claude Code spinner/output lines are assistant speech.`
-  Usually false. Spinner lines, token meters, shortcuts chrome, and diff noise should be filtered.
+- `If OpenAI STT is configured, live interim dictation should still work.`
+  False. Live interim dictation depends on the local Vosk path.
 
-- `Codex prompt hints or placeholder prompts are assistant replies.`
-  False. Prompt hints are UI chrome and should not be spoken.
-
-- `Injected user drafts are completed assistant replies.`
-  False. The speech interceptor must reject unsent or echoed user input.
+- `Reply bubbles are decorative only.`
+  False. They are part of the replay/readback UX.
 
 ## Safe Interpretation Rules
 
-- Prefer runtime receipts over assumptions.
-- Prefer `latest.jsonl` over guessed behavior.
-- Treat Windows runtime behavior as source of truth for user-facing issues.
-- Treat the Linux repo as the source of truth for git history and code changes.
+- Prefer runtime receipts over guesses.
+- Prefer `latest.jsonl` over memory.
+- Treat Linux runtime behavior as the user-facing source of truth.
+- Treat the repo code and commit history as the source of truth for implementation details.

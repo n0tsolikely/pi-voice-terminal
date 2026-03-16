@@ -1,70 +1,72 @@
 # Developer Dictionary
 
-This file maps common developer words and spoken phrases to the concepts used in this repository.
+This file maps common spoken or contributor-facing terms to the modules in this repo.
 
 ## Core Project Terms
 
 - `terminal`
-  The `node-pty`-backed WSL terminal surface inside the Electron window.
+  The `node-pty` backed Linux shell surface inside the Electron window.
 - `voice layer`
-  The microphone capture, transcription, and dictation pipeline in `renderer.js` plus related helpers under `lib/`.
+  The microphone capture, STT, dictation cleanup, and prompt injection path.
 - `response replay`
-  The assistant speech readback system that extracts terminal replies and plays them through TTS.
+  The assistant readback system that turns finalized terminal replies into replayable audio.
 - `speech relay`
-  `lib/speech-relay.js`, which turns finalized assistant text into replayable speech events.
+  `lib/speech-relay.js`, which turns finalized assistant text into `speech:*` events.
 - `speech interceptor`
-  `lib/codex-speech-interceptor.js`, which decides when terminal output is a completed assistant reply.
+  `lib/codex-speech-interceptor.js`, which decides when terminal output is complete enough to speak.
 - `terminal speech extraction`
-  `lib/terminal-speech.js`, which cleans PTY output and drops prompt/tool noise before TTS.
+  `lib/terminal-speech.js`, which drops prompt/tool noise before replay.
 - `developer dictionary`
-  `lib/dev-dictionary.js`, the spoken-programming correction layer applied after STT and before terminal injection.
+  `lib/dev-dictionary.js`, the spoken-programming correction layer used before text injection.
 - `runtime log`
-  The JSONL session logs written into the sibling `pi-voice-terminal-runtime` folder.
+  The JSONL session logs written into `../pi-voice-terminal-runtime`.
 - `doctor`
-  `npm run doctor`, the quick local environment and dependency diagnostic.
+  `npm run doctor`, the quick Pi/Linux dependency check.
 
 ## UI Terms
 
 - `reply bubble`
-  The replayable assistant-response bubble shown in the UI.
+  The replayable assistant-response card shown in the UI.
 - `status bubble`
-  A transient message near the mic button used for mode changes, capture status, and hints.
+  A transient status message near the voice controls.
 - `vaporize`
   The shared transient-bubble disappearance effect implemented in `lib/ui-vaporize.js`.
 - `R button`
   The reply-history toggle in the UI.
 
-## Speech / Transcription Terms
+## Speech Terms
 
 - `PTT`
-  Push-to-talk mode.
+  Press-to-talk mode.
 - `Click`
-  Toggle-to-record mode that injects text without auto-sending until Enter.
+  Toggle-to-record mode. Dictation injects into the prompt and waits for Enter.
 - `Auto`
-  Always-listening mode with speech/noise gating.
+  Always-listening mode with voice/noise gating.
 - `OpenAI`
-  Cloud STT/TTS path used when the API key is valid.
-- `local Whisper`
-  The faster-whisper fallback runtime installed into `.local-whisper-venv`.
-- `local TTS`
-  Windows `System.Speech` fallback path.
+  Remote STT/TTS path used when the key is valid and provider policy selects it.
+- `local Vosk`
+  The Python Vosk runtime installed into `.local-stt-venv` and pointed at `VOSK_MODEL_PATH`.
+- `Piper`
+  Optional local neural TTS adapter.
+- `espeak-ng`
+  Local fallback TTS adapter that works without a bundled neural model.
 
-## Tool / Agent Terms
+## Tool Terms
 
 - `Codex`
   OpenAI Codex running in the terminal.
 - `Claude Code`
   Claude Code running in the terminal.
 - `agent reply`
-  Assistant text that should be spoken back to the user.
+  Assistant text that should be spoken back.
 - `tool chatter`
-  Non-conversational terminal output such as spinners, tool calls, diffs, or command traces that should not be spoken.
+  Non-conversational terminal noise such as spinners, diffs, command traces, or footer chrome.
 
 ## Recommended Mental Model
 
-If you are reading or modifying the repo, think in four layers:
+Think in four layers:
 
 1. Electron shell
-2. PTY / WSL terminal session
+2. PTY-backed Linux terminal session
 3. Dictation and developer dictionary input path
 4. Assistant response replay output path

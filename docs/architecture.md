@@ -2,112 +2,102 @@
 
 ## Purpose
 
-Pi Voice Terminal is a Windows-first Electron wrapper around `wsl.exe` with:
+Pi Voice Terminal is a Raspberry Pi native Electron terminal wrapper with:
 
-- a real terminal surface
+- a real `node-pty` shell session
 - microphone-driven dictation
-- optional OpenAI transcription/TTS
-- local Whisper and Windows TTS fallbacks
-- spoken response replay for terminal-native coding agents like Codex and Claude Code
+- live and batch STT
+- assistant reply replay and readback
+- JSONL runtime logs for debugging
+
+The product goal is parity with `wsl-voice-terminal` without any Windows runtime dependency.
 
 ## Entry Points
 
 - `main.js`
-  Main Electron process. Starts the app, owns IPC, spawns the PTY backend, configures update checks, and wires STT/TTS services.
+  Starts Electron, owns IPC, creates the PTY shell session, wires STT/TTS services, handles updates, and writes runtime logs.
 - `preload.js`
-  Safe Electron bridge. Exposes the IPC surface to the renderer without enabling full Node integration.
+  Exposes the renderer-safe IPC contract.
 - `renderer.js`
-  Browser-side UI controller. Owns mic controls, transient bubble UI, response replay presentation, playback queueing, and runtime logging.
+  Owns xterm, microphone modes, replay history, playback queueing, and UI logging.
 - `index.html`
-  UI shell and static layout.
+  Static shell for the desktop UI.
 
 ## Core Runtime Modules
 
 - `lib/terminal-session.js`
-  Owns the `node-pty` session that launches `wsl.exe`.
-- `lib/speech-relay.js`
-  Converts finalized assistant text into replayable speech events and TTS audio.
-- `lib/codex-speech-interceptor.js`
-  Watches PTY input/output and decides when assistant text is complete enough to speak.
-- `lib/terminal-speech.js`
-  Cleans terminal output and extracts conversational assistant text while dropping prompt chrome, tool chatter, and shell noise.
+  Creates the Linux login-shell PTY and forwards terminal IO.
+- `lib/live-stt-broker.js`
+  Starts and talks to the Python Vosk sidecar for live partials, finals, and batch transcription.
+- `scripts/vosk_worker.py`
+  Local Vosk worker process used by the broker.
 - `lib/openai-audio-client.js`
-  OpenAI STT/TTS client.
-- `lib/local-whisper-client.js`
-  Local faster-whisper fallback runtime.
-- `lib/local-tts-client.js`
-  Windows local speech fallback.
+  OpenAI speech client for remote STT and TTS.
+- `lib/piper-tts-client.js`
+  Local Piper adapter.
+- `lib/espeak-ng-tts-client.js`
+  Local espeak-ng adapter.
 - `lib/tts-service.js`
-  Provider selection and fallback coordinator for speech synthesis.
-- `lib/dev-dictionary.js`
-  Post-transcription developer dictionary and coding phrase correction layer.
-- `lib/runtime-logger.js`
-  JSONL runtime logging used for live debugging and regression tracing.
-- `lib/ui-vaporize.js`
-  Shared transient-bubble vaporize animation helper.
-
-## UI and Voice Flow
-
-1. Renderer starts and requests PTY startup through `preload.js`.
-2. `main.js` creates `TerminalSession`.
-3. `TerminalSession` launches `wsl.exe` through `node-pty`.
-4. Renderer mic controls capture audio and send STT requests through IPC.
-5. STT result is normalized by the dictation buffer and developer dictionary before terminal injection.
-6. PTY output is observed by `SpeechRelay` through `CodexSpeechInterceptor`.
-7. Finalized assistant text is emitted as:
-   - `speech:finalized`
-   - `speech:audio`
-8. Renderer shows the reply bubble and can replay the spoken response on demand.
-
-## Response Replay Layer
-
-The response replay system is the speech readback path for assistant replies.
-
-Relevant files:
-
+  Provider selection and fallback ordering for reply readback.
 - `lib/speech-relay.js`
+  Converts finalized assistant text into replayable UI/audio events.
 - `lib/codex-speech-interceptor.js`
+  Detects reply boundaries in PTY output.
 - `lib/terminal-speech.js`
-- `renderer.js`
+  Drops prompt chrome, tool chatter, and shell noise before speech replay.
+- `lib/dev-dictionary.js`
+  Applies spoken-programming corrections before prompt injection.
+- `lib/runtime-logger.js`
+  Writes session and latest JSONL logs.
 
-What it does:
+## Runtime Flow
 
-- watches PTY output
-- extracts only the assistant reply, not shell noise
-- queues TTS generation
-- renders replayable reply bubbles in the UI
-- allows replay while keeping speech optional
+1. `renderer.js` boots the UI and requests PTY startup.
+2. `main.js` creates `TerminalSession`.
+3. `TerminalSession` launches the configured Linux shell through `node-pty`.
+4. The renderer captures microphone audio.
+5. Live PCM chunks go to `lib/live-stt-broker.js` when local Vosk is available.
+6. One-shot recordings go to Vosk or OpenAI depending on provider selection.
+7. Finalized text is normalized through the dictation buffer and injected into the PTY.
+8. PTY output is observed by `lib/speech-relay.js` through `lib/codex-speech-interceptor.js`.
+9. Reply text and optional replay audio are sent back to the renderer as `speech:*` events.
 
-What it must avoid:
+## Provider Policy
 
-- echoing unsent user drafts
-- speaking tool output, diff spam, or footer chrome
-- truncating multi-line assistant replies
+### STT
 
-## Repository Layout
+- `auto`: local Vosk first, then OpenAI batch transcription if a valid key exists
+- `local`: Vosk only
+- `openai`: OpenAI batch only, no live interim dictation
 
-- `lib/`
-  Core runtime modules and app logic.
-- `scripts/`
-  Diagnostics and helper tooling.
-- `tests/`
-  Node test runner coverage for parsing, TTS/STT helpers, updater logic, and UI-adjacent helpers.
-- `docs/`
-  Contributor-facing architecture and metadata documentation.
+### TTS
 
-## Runtime Logging
+- `auto`: OpenAI, then Piper, then espeak-ng
+- `local`: Piper, then espeak-ng
+- explicit `piper`, `espeak`, or `openai` stays pinned to that provider
 
-Runtime logs are written next to the repo in a sibling folder named:
+## Filesystem Layout
 
-- `pi-voice-terminal-runtime`
+- repo root
+  app code, tests, setup scripts, docs
+- `.local-stt/`
+  downloaded Vosk models
+- `.local-stt-venv/`
+  Python runtime for local Vosk
+- `../pi-voice-terminal-runtime/`
+  JSONL runtime logs
 
-Important event families:
+## Verification Surface
 
-- `pty.*`
-- `stt.*`
-- `speech.*`
-- `dictation.*`
-- `ui.*`
-- `app.update_*`
-
-Use `npm run doctor` first, then inspect `latest.jsonl` when debugging live behavior.
+- `scripts/doctor.js`
+  dependency and environment diagnostics
+- `scripts/verify-shell.js`
+  PTY launch and resize check
+- `scripts/verify-mic.js`
+  microphone capture and STT verification
+- `scripts/verify-tts.js`
+  TTS synthesis and playback verification
+- `scripts/verify-app.js`
+  Electron smoke startup
+- `scripts/verify-modes.js`
+  mode-state transitions and runtime log receipts

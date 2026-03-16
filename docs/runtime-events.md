@@ -1,14 +1,14 @@
 # Runtime Events
 
-This project writes JSONL runtime logs into a sibling runtime directory:
+Runtime logs are written to:
 
-- `pi-voice-terminal-runtime/latest.jsonl`
+- `../pi-voice-terminal-runtime/latest.jsonl`
 
-Use this file to debug real behavior on Windows.
+Use this file when behavior and assumptions diverge.
 
 ## Core Event Families
 
-### PTY / Terminal
+### PTY / Shell
 
 - `pty.start`
 - `pty.input`
@@ -17,19 +17,33 @@ Use this file to debug real behavior on Windows.
 - `pty.exit`
 - `pty.dispose`
 
-These events show the actual shell session and are the source of truth for what reached the terminal.
+These are the source of truth for what actually hit the shell.
 
-### Speech To Text
+### STT
 
 - `stt.request`
 - `stt.success`
 - `stt.error`
-- `stt.fallback`
 - `stt.status`
+- `stt.live_started`
+- `stt.live_stopping`
+- `stt.live_disposed`
+- `stt.live_error`
+- `stt.live_status`
+- `stt.live_partial`
+- `stt.live_final`
+- `stt.live_worker_stderr`
+- `stt.live_worker_exit`
+- `stt.live_worker_parse_error`
 
-Use these to see whether transcription used OpenAI or local Whisper.
+Use these to separate:
 
-### Dictation / Mic
+- local Vosk runtime problems
+- provider selection problems
+- batch transcription failures
+- live interim dictation failures
+
+### Mic / Dictation
 
 - `mic.intent`
 - `mic.recording_started`
@@ -46,9 +60,9 @@ Use these to see whether transcription used OpenAI or local Whisper.
 - `dictation.live_auto_rejected`
 - `dictation.live_auto_injected`
 
-Use these to debug push-to-talk, click mode, auto mode, and dictation noise rejection.
+Use these to debug `PTT`, `Click`, `Auto`, noise gating, and injection behavior.
 
-### Response Replay / TTS
+### Reply Replay / TTS
 
 - `speech.finalized`
 - `speech.audio`
@@ -59,44 +73,64 @@ Use these to debug push-to-talk, click mode, auto mode, and dictation noise reje
 - `speech.playback_queue_drained`
 - `speech.auto_reply_toggled`
 
-These events describe what was chosen for spoken replay and whether it actually played.
+These show which reply was spoken, by which provider, and whether playback actually happened.
 
-### Speech Analysis
+### Reply Extraction
 
 - `speech.analysis`
 - `speech.analysis_rejected`
 - `speech.analysis_finalized`
 
-These are the key debugging events for reply extraction:
+These are the important events when the wrong terminal text was spoken or a real answer was missed.
 
-- what candidate text was considered
-- which boundary condition fired
-- whether a candidate was rejected as draft echo or missing boundary
-
-### UI
+### UI / App
 
 - `ui.status`
 - `ui.vaporize`
-
-These help debug transient bubble lifecycle and vaporize behavior.
-
-### App / Updates / Permissions
-
+- `ui.vaporize_result`
 - `app.ready`
 - `app.status`
+- `app.smoke_test_ready`
 - `app.update_check`
+- `app.update_check_failed`
 - `app.update_prompt_shown`
 - `app.update_prompt_dismissed`
 - `app.update_apply_started`
 - `app.update_apply_ready`
 - `app.update_apply_failed`
-- `permissions.check`
-- `permissions.request`
-- `permissions.device_request`
 
 ## Debugging Recipes
 
-### Assistant reply was wrong or incomplete
+### The shell started but behaved weirdly
+
+Inspect:
+
+- `pty.start`
+- `pty.output`
+- `pty.resize`
+- `pty.exit`
+
+### Live dictation stopped working
+
+Inspect:
+
+- `stt.live_started`
+- `stt.live_status`
+- `stt.live_partial`
+- `stt.live_final`
+- `stt.live_error`
+- `dictation.live_error`
+
+### The app fell back to a different speech provider
+
+Inspect:
+
+- `stt.request`
+- `stt.success`
+- `speech.fallback`
+- `speech.audio`
+
+### The wrong reply was spoken
 
 Inspect:
 
@@ -105,31 +139,15 @@ Inspect:
 - `speech.analysis_rejected`
 - `speech.finalized`
 
-### User draft text was spoken back
+### Mode switching looked wrong
 
 Inspect:
 
-- `pty.input`
-- `speech.analysis_rejected`
-- `speech.finalized`
-
-### Bubble did not vaporize
-
-Inspect:
-
-- `ui.status`
-- `ui.vaporize`
-
-Check the `reason`, `durationMs`, `particleSize`, `travel`, and `gravity` fields.
-
-### Local fallback confusion
-
-Inspect:
-
-- `stt.request`
-- `stt.fallback`
-- `speech.fallback`
+- `mic.mode_changed`
+- `mic.auto_enabled`
+- `mic.auto_disabled`
+- `dictation.live_auto_injected`
 
 ## Practical Rule
 
-When live behavior and code disagree, trust the Windows runtime log first.
+Trust the JSONL receipts over guesses.
