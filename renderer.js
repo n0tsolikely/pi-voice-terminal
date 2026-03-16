@@ -42,7 +42,6 @@
       foreground: '#f3f3f3'
     }
   })
-  const SpeechRecognitionClass = window.SpeechRecognition || window.webkitSpeechRecognition || null
   const AudioContextClass = window.AudioContext || window.webkitAudioContext || null
   const {
     AUTO_STRATEGIES,
@@ -85,6 +84,8 @@
   const LIVE_DICTATION_FALLBACK_MS = 650
   const LIVE_RESULT_GRACE_MS = 900
   const LIVE_STOP_WAIT_MS = 900
+  const LIVE_STT_TARGET_SAMPLE_RATE = 16000
+  const LIVE_STT_CHUNK_SAMPLES = Math.floor(LIVE_STT_TARGET_SAMPLE_RATE * 0.16)
   const REPLY_HISTORY_LIMIT = 3
   const REPLY_HISTORY_AUTO_HIDE_MS = 7000
   const STATUS_NOTICE_MS = 5000
@@ -97,7 +98,7 @@
   ])
   const runtimeSupport = {
     capture: Boolean(navigator.mediaDevices?.getUserMedia && window.MediaRecorder),
-    liveDictation: Boolean(SpeechRecognitionClass),
+    liveDictation: Boolean(api.startLiveStt && api.pushLiveSttAudio && api.stopLiveStt),
     meter: Boolean(AudioContextClass)
   }
 
@@ -108,7 +109,6 @@
   let dictationBuffer = createDictationBuffer()
   let mediaStream = null
   let mediaRecorder = null
-  let speechRecognition = null
   let liveDictationSession = null
   let currentCapture = null
   let activePointerId = null
@@ -124,9 +124,14 @@
   let audioContext = null
   let analyser = null
   let sourceNode = null
+  let liveSttProcessorNode = null
+  let liveSttFallbackProcessor = null
+  let liveSttSilentGainNode = null
   let frequencyData = null
   let timeDomainData = null
   let meterAnimationFrame = 0
+  let liveSttChunkQueue = []
+  let liveSttChunkSampleCount = 0
   let statusOverride = null
   let statusOverrideTimer = 0
   let isPreviewRequestPending = false
@@ -211,6 +216,22 @@
 
   api.onPtyExit((event) => {
     setStatus(`Shell session exited (${event.exitCode ?? 'unknown'}).`, 'error')
+  })
+
+  api.onLiveSttPartial?.((payload) => {
+    handleLiveSttPartial(payload)
+  })
+
+  api.onLiveSttFinal?.((payload) => {
+    handleLiveSttFinal(payload)
+  })
+
+  api.onLiveSttStatus?.((payload) => {
+    handleLiveSttStatus(payload)
+  })
+
+  api.onLiveSttError?.((payload) => {
+    handleLiveSttError(payload)
   })
 
   api.onError((payload) => {
@@ -1323,7 +1344,7 @@
   function disarmAutoRuntime({ keepTypedText = true } = {}) {
     clearLiveRecognitionRestart()
 
-    if (speechRecognition || micState.autoStrategy === AUTO_STRATEGIES.LIVE) {
+    if (liveDictationSession || micState.autoStrategy === AUTO_STRATEGIES.LIVE) {
       stopLiveDictation({ keepTypedText })
     }
   }
@@ -1358,9 +1379,110 @@
       await audioContext.resume()
     }
 
+    await ensureLiveSttCaptureReady()
+
     if (analyser && !meterAnimationFrame) {
       meterAnimationFrame = window.requestAnimationFrame(tickMeter)
     }
+  }
+
+  async function ensureLiveSttCaptureReady() {
+    if (!audioContext || !sourceNode || liveSttProcessorNode || liveSttFallbackProcessor) {
+      return
+    }
+
+    liveSttSilentGainNode = audioContext.createGain()
+    liveSttSilentGainNode.gain.value = 0
+    liveSttSilentGainNode.connect(audioContext.destination)
+
+    if (audioContext.audioWorklet?.addModule && window.AudioWorkletNode) {
+      await audioContext.audioWorklet.addModule(
+        new URL('./scripts/pcm-recorder-worklet.js', window.location.href).toString()
+      )
+      const processorNode = new AudioWorkletNode(audioContext, 'pcm-recorder', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1]
+      })
+
+      processorNode.port.onmessage = (event) => {
+        handleLiveSttProcessorBuffer(event.data)
+      }
+      sourceNode.connect(processorNode)
+      processorNode.connect(liveSttSilentGainNode)
+      liveSttProcessorNode = processorNode
+      return
+    }
+
+    const fallbackProcessor = audioContext.createScriptProcessor(4096, 1, 1)
+    fallbackProcessor.onaudioprocess = (event) => {
+      const input = event.inputBuffer.getChannelData(0)
+      handleLiveSttProcessorBuffer(
+        convertFloat32ToPcm16(input, audioContext.sampleRate, LIVE_STT_TARGET_SAMPLE_RATE)
+      )
+    }
+    sourceNode.connect(fallbackProcessor)
+    fallbackProcessor.connect(liveSttSilentGainNode)
+    liveSttFallbackProcessor = fallbackProcessor
+  }
+
+  function handleLiveSttProcessorBuffer(rawBuffer) {
+    const pcmChunk =
+      rawBuffer instanceof ArrayBuffer
+        ? new Int16Array(rawBuffer)
+        : rawBuffer instanceof Int16Array
+          ? rawBuffer
+          : null
+
+    if (!pcmChunk?.length || !liveDictationSession?.id) {
+      return
+    }
+
+    queueLiveSttChunk(pcmChunk)
+  }
+
+  function queueLiveSttChunk(chunk) {
+    liveSttChunkQueue.push(new Int16Array(chunk))
+    liveSttChunkSampleCount += chunk.length
+
+    while (liveSttChunkSampleCount >= LIVE_STT_CHUNK_SAMPLES) {
+      flushLiveSttChunk(false)
+    }
+  }
+
+  function flushLiveSttChunk(force) {
+    if (!liveSttChunkQueue.length || !liveDictationSession?.id) {
+      return
+    }
+
+    if (!force && liveSttChunkSampleCount < LIVE_STT_CHUNK_SAMPLES) {
+      return
+    }
+
+    const targetSamples = force ? liveSttChunkSampleCount : LIVE_STT_CHUNK_SAMPLES
+    const chunk = new Int16Array(targetSamples)
+    let offset = 0
+
+    while (offset < targetSamples && liveSttChunkQueue.length) {
+      const head = liveSttChunkQueue[0]
+      const remaining = targetSamples - offset
+
+      if (head.length <= remaining) {
+        chunk.set(head, offset)
+        offset += head.length
+        liveSttChunkQueue.shift()
+      } else {
+        chunk.set(head.subarray(0, remaining), offset)
+        liveSttChunkQueue[0] = head.subarray(remaining)
+        offset += remaining
+      }
+    }
+
+    liveSttChunkSampleCount -= chunk.length
+    api.pushLiveSttAudio?.({
+      sessionId: liveDictationSession.id,
+      audioBuffer: chunk.buffer
+    })
   }
 
   function tickMeter() {
@@ -1579,62 +1701,55 @@
   }
 
   async function startLiveDictation({ source = MIC_MODES.AUTO } = {}) {
-    if (
-      liveDictationSession ||
-      speechRecognition ||
-      (!shouldUseLiveDictation() && !supportsManualLiveDictation(source))
-    ) {
+    if (liveDictationSession || (!shouldUseLiveDictation() && !supportsManualLiveDictation(source))) {
       return
     }
 
-    const recognition = new SpeechRecognitionClass()
     const session = createLiveDictationSession({
-      source,
-      recognition
+      source
     })
 
-    recognition.continuous = true
-    recognition.interimResults = true
-    recognition.maxAlternatives = 1
-    recognition.lang = navigator.language || 'en-US'
-
+    liveSttChunkQueue = []
+    liveSttChunkSampleCount = 0
     liveDictationSession = session
-    speechRecognition = recognition
-
-    recognition.addEventListener('result', (event) => {
-      handleLiveDictationResult(event, session)
-    })
-    recognition.addEventListener('error', (event) => {
-      handleLiveDictationError(event, session)
-
-      if (event.error === 'aborted' || event.error === 'no-speech') {
-        return
-      }
-
-      if (source !== MIC_MODES.AUTO) {
-        return
-      }
-
-      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        switchAutoModeToCapture('Live dictation is unavailable here. Using auto capture fallback.')
-        return
-      }
-
-      switchAutoModeToCapture(`Live dictation failed: ${event.error}. Using auto capture fallback.`)
-    })
-    recognition.addEventListener('end', () => {
-      handleLiveDictationEnd(session)
-    })
     renderUi()
     logRuntime('dictation.live_started', {
       source
     })
 
     try {
-      recognition.start()
+      const result = await api.startLiveStt({
+        sessionId: session.id,
+        language: navigator.language || 'en-US'
+      })
+
+      if (result && result.ok === false) {
+        if (liveDictationSession === session) {
+          liveDictationSession = null
+        }
+
+        session.resolveStopped(getLiveDictationSnapshot())
+        renderUi()
+
+        if (source === MIC_MODES.AUTO) {
+          switchAutoModeToCapture(
+            'Live interim dictation is unavailable with the current STT provider. Using auto capture fallback.'
+          )
+        } else {
+          setStatus(
+            'Live preview is unavailable with the current STT provider. Final transcription will still be injected when capture finishes.',
+            'default',
+            {
+              durationMs: STATUS_NOTICE_MS,
+              persistDuringBusy: true
+            }
+          )
+        }
+
+        return
+      }
     } catch (error) {
-      if (speechRecognition === recognition && liveDictationSession === session) {
-        speechRecognition = null
+      if (liveDictationSession === session) {
         liveDictationSession = null
       }
 
@@ -1649,6 +1764,8 @@
 
     const session = liveDictationSession
 
+    flushLiveSttChunk(true)
+
     if (keepTypedText) {
       commitVisibleInterimDictation()
     } else {
@@ -1662,22 +1779,66 @@
 
     session.stopRequested = true
 
-    if (speechRecognition === session.recognition) {
-      speechRecognition = null
-    }
-
-    try {
-      session.recognition.stop()
-    } catch (_error) {
-      // Chromium can throw if stop is called during teardown.
-    }
-
     logRuntime('dictation.live_stopping', {
       source: session.source,
       keepTypedText
     })
     renderUi()
+
+    api.stopLiveStt?.({
+      sessionId: session.id,
+      language: navigator.language || 'en-US'
+    }).catch((error) => {
+      handleLiveSttError({
+        sessionId: session.id,
+        message: error instanceof Error ? error.message : String(error)
+      })
+    })
+
     return waitForLiveDictationToStop(session)
+  }
+
+  function handleLiveSttPartial(payload) {
+    const session = liveDictationSession
+
+    if (!session || payload?.sessionId !== session.id) {
+      return
+    }
+
+    if (session.source === MIC_MODES.AUTO && (!micState.autoEnabled || micState.mode !== MIC_MODES.AUTO)) {
+      return
+    }
+
+    if (session.source === MIC_MODES.AUTO && (isPlayingAudio || performance.now() < playbackQuietUntil)) {
+      return
+    }
+
+    lastLiveResultAt = performance.now()
+    liveFallbackVoiceSince = 0
+    const nextInterimText = normalizeDictationText(payload?.text)
+    const replaced = replaceInterimDictation(dictationBuffer, nextInterimText)
+
+    dictationBuffer = replaced.buffer
+    writeAppTextToPty(replaced.eraseText)
+    writeAppTextToPty(replaced.insertText)
+    logRuntime('dictation.live_result', {
+      source: session.source,
+      interimText: nextInterimText,
+      committedText: normalizeDictationText(dictationBuffer.committedText)
+    })
+    renderUi()
+  }
+
+  function handleLiveSttFinal(payload) {
+    const session = liveDictationSession
+
+    if (!session || payload?.sessionId !== session.id) {
+      return
+    }
+
+    handleLiveDictationResult({
+      transcript: payload?.text
+    }, session)
   }
 
   function handleLiveDictationResult(event, session) {
@@ -1695,50 +1856,45 @@
 
     lastLiveResultAt = performance.now()
     liveFallbackVoiceSince = 0
-    let nextInterimText = ''
     let nextBuffer = dictationBuffer
+    const transcript = normalizeDictationText(event?.transcript)
 
-    for (let index = event.resultIndex; index < event.results.length; index += 1) {
-      const result = event.results[index]
-      const transcript = normalizeDictationText(result[0]?.transcript)
-
-      if (!transcript) {
-        continue
-      }
-
-      if (result.isFinal) {
-        const cleared = clearInterimDictation(nextBuffer)
-
-        nextBuffer = cleared.buffer
-        writeAppTextToPty(cleared.eraseText)
-
-        const appended = appendCommittedDictation(nextBuffer, transcript)
-
-        nextBuffer = appended.buffer
-        writeAppTextToPty(appended.insertText)
-      } else {
-        nextInterimText = appendWords(nextInterimText, transcript)
-      }
+    if (!transcript) {
+      return
     }
 
-    const replaced = replaceInterimDictation(nextBuffer, nextInterimText)
+    const cleared = clearInterimDictation(nextBuffer)
+
+    nextBuffer = cleared.buffer
+    writeAppTextToPty(cleared.eraseText)
+
+    const appended = appendCommittedDictation(nextBuffer, transcript)
+
+    nextBuffer = appended.buffer
+    writeAppTextToPty(appended.insertText)
+
+    const replaced = replaceInterimDictation(nextBuffer, '')
 
     dictationBuffer = replaced.buffer
     writeAppTextToPty(replaced.eraseText)
     writeAppTextToPty(replaced.insertText)
     logRuntime('dictation.live_result', {
       source: session.source,
-      interimText: nextInterimText,
+      interimText: '',
       committedText: normalizeDictationText(nextBuffer.committedText)
     })
     renderUi()
   }
 
-  function handleLiveDictationError(event, session) {
-    const errorCode = event.error || 'unknown'
+  function handleLiveSttError(payload) {
+    const session =
+      payload?.sessionId && liveDictationSession?.id === payload.sessionId
+        ? liveDictationSession
+        : liveDictationSession
+    const errorCode = payload?.error || payload?.message || 'unknown'
 
     logRuntime('dictation.live_error', {
-      source: session.source,
+      source: session?.source || MIC_MODES.AUTO,
       error: errorCode
     })
 
@@ -1747,7 +1903,7 @@
     }
 
     if (
-      session.source !== MIC_MODES.AUTO &&
+      session?.source !== MIC_MODES.AUTO &&
       errorCode !== 'aborted' &&
       errorCode !== 'no-speech'
     ) {
@@ -1760,6 +1916,22 @@
         }
       )
     }
+
+    if (session?.source === MIC_MODES.AUTO && errorCode !== 'aborted' && errorCode !== 'no-speech') {
+      switchAutoModeToCapture(`Live dictation failed: ${errorCode}. Using auto capture fallback.`)
+    }
+  }
+
+  function handleLiveSttStatus(payload) {
+    const session = liveDictationSession
+
+    if (!session || payload?.sessionId !== session.id) {
+      return
+    }
+
+    if (payload.state === 'stopped' || payload.state === 'disposed') {
+      handleLiveDictationEnd(session)
+    }
   }
 
   function handleLiveDictationEnd(session) {
@@ -1770,10 +1942,8 @@
       !session.stopRequested
 
     commitVisibleInterimDictation()
-
-    if (speechRecognition === session.recognition) {
-      speechRecognition = null
-    }
+    liveSttChunkQueue = []
+    liveSttChunkSampleCount = 0
 
     if (liveDictationSession === session && !shouldRestart) {
       liveDictationSession = null
@@ -1913,7 +2083,7 @@
     liveFallbackVoiceSince = 0
     clearLiveRecognitionRestart()
 
-    if (speechRecognition) {
+    if (liveDictationSession) {
       stopLiveDictation({ keepTypedText: true })
     }
 
@@ -2456,7 +2626,7 @@
     })
   }
 
-  function createLiveDictationSession({ source, recognition }) {
+  function createLiveDictationSession({ source }) {
     let resolveStopped
 
     const stopPromise = new Promise((resolve) => {
@@ -2464,8 +2634,8 @@
     })
 
     return {
+      id: globalThis.crypto?.randomUUID?.() || `live-stt-${Date.now()}`,
       source,
-      recognition,
       stopRequested: false,
       stopPromise,
       resolveStopped
@@ -2487,6 +2657,55 @@
     return {
       text: normalizeDictationText(getVisibleDictationText())
     }
+  }
+
+  function convertFloat32ToPcm16(input, inputRate, outputRate) {
+    if (!input?.length) {
+      return new Int16Array(0)
+    }
+
+    if (!Number.isFinite(inputRate) || inputRate <= 0 || inputRate === outputRate) {
+      return float32ToInt16(input)
+    }
+
+    const sampleRateRatio = inputRate / outputRate
+    const outputLength = Math.max(1, Math.round(input.length / sampleRateRatio))
+    const output = new Int16Array(outputLength)
+    let offsetResult = 0
+    let offsetBuffer = 0
+
+    while (offsetResult < output.length) {
+      const nextOffsetBuffer = Math.min(input.length, Math.round((offsetResult + 1) * sampleRateRatio))
+      let accum = 0
+      let count = 0
+
+      for (let index = offsetBuffer; index < nextOffsetBuffer; index += 1) {
+        accum += input[index]
+        count += 1
+      }
+
+      const sample = count ? accum / count : input[offsetBuffer] || 0
+      output[offsetResult] = clampPcm16(sample)
+      offsetResult += 1
+      offsetBuffer = nextOffsetBuffer
+    }
+
+    return output
+  }
+
+  function float32ToInt16(input) {
+    const output = new Int16Array(input.length)
+
+    for (let index = 0; index < input.length; index += 1) {
+      output[index] = clampPcm16(input[index])
+    }
+
+    return output
+  }
+
+  function clampPcm16(value) {
+    const sample = Math.max(-1, Math.min(1, Number(value) || 0))
+    return sample < 0 ? sample * 0x8000 : sample * 0x7fff
   }
 
   function getVisibleDictationText() {

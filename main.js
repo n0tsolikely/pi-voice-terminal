@@ -6,6 +6,8 @@ const packageManifest = require('./package.json')
 const { AppUpdater, buildUpdatePrompt } = require('./lib/app-updater')
 const {
   normalizeClipboardText,
+  normalizeLiveSttAudioPayload,
+  normalizeLiveSttControlPayload,
   normalizePreviewSpeechPayload,
   normalizePtyDimensions,
   normalizePtyInput,
@@ -14,11 +16,16 @@ const {
   normalizeTranscribePayload,
   normalizeUpdateAction
 } = require('./lib/ipc-contracts')
+const { LiveSttBroker } = require('./lib/live-stt-broker')
 const { LocalTtsClient } = require('./lib/local-tts-client')
-const { LocalWhisperClient } = require('./lib/local-whisper-client')
 const { OpenAiAudioClient, isInvalidApiKeyError } = require('./lib/openai-audio-client')
 const { RuntimeLogger } = require('./lib/runtime-logger')
 const { runCommand } = require('./lib/run-command')
+const {
+  providerSupportsLiveStt,
+  resolveSttProvider,
+  STT_PROVIDERS
+} = require('./lib/stt-provider-selection')
 const { TerminalSession } = require('./lib/terminal-session')
 const { TTS_PROVIDERS } = require('./lib/tts-provider-selection')
 const { TtsService } = require('./lib/tts-service')
@@ -30,12 +37,14 @@ const TRANSCRIPTION_MODEL = process.env.OPENAI_TRANSCRIPTION_MODEL || 'whisper-1
 const TTS_MODEL = process.env.OPENAI_TTS_MODEL || 'tts-1'
 const TTS_VOICE = process.env.OPENAI_TTS_VOICE || 'alloy'
 const TTS_FORMAT = 'mp3'
+const STT_PROVIDER = process.env.STT_PROVIDER || STT_PROVIDERS.AUTO
 const TTS_PROVIDER = process.env.TTS_PROVIDER || TTS_PROVIDERS.AUTO
 const LOCAL_TTS_VOICE = process.env.LOCAL_TTS_VOICE || ''
-const LOCAL_WHISPER_MODEL = process.env.LOCAL_WHISPER_MODEL || 'base.en'
-const LOCAL_WHISPER_DEVICE = process.env.LOCAL_WHISPER_DEVICE || 'cpu'
-const LOCAL_WHISPER_COMPUTE_TYPE = process.env.LOCAL_WHISPER_COMPUTE_TYPE || 'int8'
-const LOCAL_WHISPER_LANGUAGE = process.env.LOCAL_WHISPER_LANGUAGE || 'en'
+const LOCAL_STT_LANGUAGE = process.env.LOCAL_STT_LANGUAGE || 'en'
+const VOSK_MODEL_PATH = resolveAppPath(
+  process.env.VOSK_MODEL_PATH,
+  path.join(__dirname, '.local-stt', 'models', 'vosk-model-small-en-us-0.15')
+)
 
 let mainWindow = null
 let terminalSession = null
@@ -72,13 +81,15 @@ const ttsService = new TtsService({
   openAiAudioClient: openAIClient,
   localTtsClient
 })
-const localWhisperClient = new LocalWhisperClient({
+const liveSttBroker = new LiveSttBroker({
   baseDir: __dirname,
   runCommand,
-  model: LOCAL_WHISPER_MODEL,
-  device: LOCAL_WHISPER_DEVICE,
-  computeType: LOCAL_WHISPER_COMPUTE_TYPE,
-  language: LOCAL_WHISPER_LANGUAGE
+  modelPath: VOSK_MODEL_PATH,
+  language: LOCAL_STT_LANGUAGE,
+  logger: appLogger.child({
+    component: 'stt-live'
+  }),
+  send: (channel, payload) => terminalSession?.send(channel, payload)
 })
 const appUpdater = new AppUpdater({
   baseDir: __dirname,
@@ -121,7 +132,7 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'index.html'))
   mainWindow.webContents.once('did-finish-load', () => {
     announceInitialSpeechMode()
-    warmLocalWhisperRuntime()
+    warmLocalSttRuntime()
   })
   windowLogger.log('window.created', {
     width: 1440,
@@ -133,6 +144,7 @@ function createWindow() {
     isCloseVaporizePending = false
     isCloseVaporizeForced = false
     terminalSession?.dispose()
+    void liveSttBroker.dispose().catch(() => {})
     terminalSession = null
     mainWindow = null
   })
@@ -298,9 +310,81 @@ app.whenReady().then(() => {
     }
   })
 
+  ipcMain.handle('stt:live-start', async (_event, payload) => {
+    const normalizedPayload = normalizeLiveSttControlPayload(payload)
+    const provider = resolveRequestedSttProvider()
+
+    if (!providerSupportsLiveStt(provider)) {
+      sendStatusOnce(
+        `stt.live_unavailable.${provider}`,
+        'Live interim dictation is unavailable with the current STT provider. Capture will be transcribed after you stop recording.'
+      )
+
+      return {
+        ok: false,
+        provider,
+        liveSupported: false
+      }
+    }
+
+    await liveSttBroker.startSession(normalizedPayload)
+    runtimeLogger.log('stt.live_started', {
+      provider,
+      sessionId: normalizedPayload.sessionId,
+      language: normalizedPayload.language
+    })
+
+    return {
+      ok: true,
+      provider,
+      liveSupported: true
+    }
+  })
+
+  ipcMain.on('stt:live-audio', (_event, payload) => {
+    const normalizedPayload = normalizeLiveSttAudioPayload(payload)
+
+    liveSttBroker.pushAudio(normalizedPayload).catch((error) => {
+      runtimeLogger.log('stt.live_error', {
+        sessionId: normalizedPayload.sessionId,
+        message: error instanceof Error ? error.message : String(error)
+      })
+      terminalSession?.send('stt:live-error', {
+        sessionId: normalizedPayload.sessionId,
+        message: error instanceof Error ? error.message : String(error)
+      })
+    })
+  })
+
+  ipcMain.handle('stt:live-stop', async (_event, payload) => {
+    const normalizedPayload = normalizeLiveSttControlPayload(payload)
+
+    await liveSttBroker.stopSession(normalizedPayload)
+    runtimeLogger.log('stt.live_stopping', {
+      sessionId: normalizedPayload.sessionId
+    })
+
+    return {
+      ok: true
+    }
+  })
+
+  ipcMain.handle('stt:live-dispose', async (_event, payload) => {
+    const normalizedPayload = normalizeLiveSttControlPayload(payload)
+
+    await liveSttBroker.disposeSession(normalizedPayload)
+    runtimeLogger.log('stt.live_disposed', {
+      sessionId: normalizedPayload.sessionId
+    })
+
+    return {
+      ok: true
+    }
+  })
+
   ipcMain.handle('stt:transcribe', async (_event, payload) => {
     const normalizedPayload = normalizeTranscribePayload(payload)
-    const requestedProvider = openAIClient.hasApiKey() ? 'openai' : 'local-whisper'
+    const requestedProvider = resolveRequestedSttProvider()
 
     runtimeLogger.log('stt.request', {
       provider: requestedProvider,
@@ -309,8 +393,8 @@ app.whenReady().then(() => {
     })
 
     try {
-      if (!openAIClient.hasApiKey()) {
-        return await transcribeWithLocalWhisper(payload, openAIClient.getApiKeyState().reason)
+      if (requestedProvider === STT_PROVIDERS.LOCAL) {
+        return await transcribeWithLocalVosk(normalizedPayload)
       }
 
       const transcript = await openAIClient.transcribeAudio(
@@ -324,21 +408,14 @@ app.whenReady().then(() => {
       })
       return transcript
     } catch (error) {
-      if (!isInvalidApiKeyError(error)) {
+      if (!isInvalidApiKeyError(error) || requestedProvider !== STT_PROVIDERS.OPENAI) {
         runtimeLogger.log('stt.error', {
           provider: requestedProvider,
           message: error instanceof Error ? error.message : String(error)
         })
         throw error
       }
-
-      runtimeLogger.log('stt.fallback', {
-        from: 'openai',
-        to: 'local-whisper',
-        message: error instanceof Error ? error.message : String(error)
-      })
-
-      return transcribeWithLocalWhisper(payload, openAIClient.getApiKeyState().reason)
+      throw error
     }
   })
 
@@ -390,6 +467,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', async () => {
   isAppQuitting = true
+  await liveSttBroker.dispose().catch(() => {})
   await appLogger.log('app.before_quit', {})
   await runtimeLogger.flush()
 })
@@ -505,9 +583,25 @@ function clearCloseVaporizeTimeout() {
 function announceInitialSpeechMode() {
   const apiKeyState = openAIClient.getApiKeyState()
 
-  if (apiKeyState.reason === 'missing' || apiKeyState.reason === 'placeholder') {
-    sendStatusOnce(`stt.local_only.${apiKeyState.reason}`, getLocalOnlyMessage(apiKeyState.reason))
+  if (liveSttBroker.isConfigured()) {
+    if (apiKeyState.reason === 'missing' || apiKeyState.reason === 'placeholder') {
+      sendStatusOnce(`stt.local_only.${apiKeyState.reason}`, getLocalOnlyMessage(apiKeyState.reason))
+    }
+    return
   }
+
+  if (apiKeyState.available) {
+    sendStatusOnce(
+      'stt.openai_only',
+      'OpenAI transcription is configured, but no local Vosk model was found. Live interim dictation is unavailable until you run setup:raspi.'
+    )
+    return
+  }
+
+  sendStatusOnce(
+    `stt.runtime_missing.${apiKeyState.reason || 'missing'}`,
+    'No local Vosk model was found. Run setup:raspi to enable live dictation or configure OPENAI_API_KEY for batch transcription.'
+  )
 }
 
 function queueStartupUpdateCheck() {
@@ -572,44 +666,48 @@ function sendStatusOnce(key, message) {
   sendStatus(message)
 }
 
-function forwardLocalWhisperStatus(message) {
+function resolveRequestedSttProvider() {
+  return resolveSttProvider({
+    requestedProvider: STT_PROVIDER,
+    hasOpenAiKey: openAIClient.hasApiKey(),
+    hasLocalRuntime: liveSttBroker.isConfigured()
+  })
+}
+
+function forwardLocalSttStatus(message) {
   runtimeLogger.log('stt.status', {
-    provider: 'local-whisper',
+    provider: 'local-vosk',
     message
   })
   sendStatus(message)
 }
 
-function warmLocalWhisperRuntime() {
-  localWhisperClient.prepareRuntime((message) => {
-    forwardLocalWhisperStatus(message)
+function warmLocalSttRuntime() {
+  if (!liveSttBroker.isConfigured()) {
+    return
+  }
+
+  liveSttBroker.prepareRuntime((message) => {
+    forwardLocalSttStatus(message)
   }).catch((error) => {
     runtimeLogger.log('stt.runtime_setup_failed', {
-      provider: 'local-whisper',
+      provider: 'local-vosk',
       message: error instanceof Error ? error.message : String(error)
     })
   })
 }
 
-async function transcribeWithLocalWhisper(payload, fallbackReason = '') {
-  const normalizedPayload = normalizeTranscribePayload(payload)
-  const reason = fallbackReason || openAIClient.getApiKeyState().reason
-
-  if (reason && reason !== 'configured') {
-    sendStatusOnce(`stt.local_only.${reason}`, getLocalOnlyMessage(reason))
-  }
-
-  const transcript = await localWhisperClient.transcribeAudio(
+async function transcribeWithLocalVosk(normalizedPayload) {
+  const transcript = await liveSttBroker.transcribeAudio(
     normalizedPayload.audioBuffer,
     normalizedPayload.mimeType,
     (message) => {
-      forwardLocalWhisperStatus(message)
+      forwardLocalSttStatus(message)
     }
   )
 
   runtimeLogger.log('stt.success', {
-    provider: 'local-whisper',
-    fallbackReason: reason,
+    provider: 'local-vosk',
     text: transcript
   })
 
@@ -618,10 +716,10 @@ async function transcribeWithLocalWhisper(payload, fallbackReason = '') {
 
 function getLocalOnlyMessage(reason) {
   if (reason === 'auth-failed') {
-    return 'OpenAI API key was rejected. Using local Whisper for this session.'
+    return 'OpenAI API key was rejected. Using local Vosk for this session.'
   }
 
-  return 'No valid OpenAI API key found. Using local Whisper.'
+  return 'No valid OpenAI API key found. Using local Vosk.'
 }
 
 function isAudioMediaPermission(permission, details = {}) {
@@ -677,4 +775,14 @@ function loadDotEnv(dotEnvPath) {
 
     process.env[key] = value
   }
+}
+
+function resolveAppPath(value, fallbackPath) {
+  const normalized = String(value || '').trim()
+
+  if (!normalized) {
+    return fallbackPath
+  }
+
+  return path.isAbsolute(normalized) ? normalized : path.join(__dirname, normalized)
 }

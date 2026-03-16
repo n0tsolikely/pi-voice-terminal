@@ -3,6 +3,8 @@ const assert = require('node:assert/strict')
 
 const {
   normalizeClipboardText,
+  normalizeLiveSttAudioPayload,
+  normalizeLiveSttControlPayload,
   normalizePreviewSpeechPayload,
   normalizePtyDimensions,
   normalizePtyInput,
@@ -57,6 +59,29 @@ test('normalizeTranscribePayload rejects invalid or empty audio payloads', () =>
     () => normalizeTranscribePayload({ audioBuffer: 'not-binary' }),
     /invalid/i
   )
+})
+
+test('normalizeLiveSttControlPayload requires a stable session ID', () => {
+  const payload = normalizeLiveSttControlPayload({
+    sessionId: 'session-1',
+    language: 'en-US'
+  })
+
+  assert.deepEqual(payload, {
+    sessionId: 'session-1',
+    language: 'en-US'
+  })
+  assert.throws(() => normalizeLiveSttControlPayload({}), /session ID is missing/)
+})
+
+test('normalizeLiveSttAudioPayload accepts binary audio chunks', () => {
+  const payload = normalizeLiveSttAudioPayload({
+    sessionId: 'session-1',
+    audioBuffer: new Uint8Array([1, 2, 3, 4])
+  })
+
+  assert.equal(payload.sessionId, 'session-1')
+  assert.deepEqual(Array.from(payload.audioBuffer), [1, 2, 3, 4])
 })
 
 test('normalizeRuntimeLogPayload returns a safe default type and JSON-safe payload', () => {
