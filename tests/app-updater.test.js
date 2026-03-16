@@ -13,7 +13,7 @@ test('compareVersions handles basic semver ordering', () => {
 })
 
 test('checkForUpdate uses git commit comparison when the repo has .git metadata', async () => {
-  const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'wsl-voice-terminal-'))
+  const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pi-voice-terminal-'))
 
   await fs.promises.writeFile(path.join(baseDir, 'install.ps1'), '# install\n', 'utf8')
   await fs.promises.mkdir(path.join(baseDir, '.git'))
@@ -50,7 +50,7 @@ test('checkForUpdate uses git commit comparison when the repo has .git metadata'
 })
 
 test('checkForUpdate falls back to version checks when the install is not a git repo', async () => {
-  const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'wsl-voice-terminal-'))
+  const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pi-voice-terminal-'))
 
   await fs.promises.writeFile(path.join(baseDir, 'install.ps1'), '# install\n', 'utf8')
 
@@ -77,7 +77,7 @@ test('checkForUpdate falls back to version checks when the install is not a git 
 })
 
 test('applyUpdate runs install.ps1 in place for git repos', async () => {
-  const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'wsl-voice-terminal-'))
+  const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pi-voice-terminal-'))
   const calls = []
 
   await fs.promises.writeFile(path.join(baseDir, 'install.ps1'), '# install\n', 'utf8')
@@ -105,7 +105,7 @@ test('applyUpdate runs install.ps1 in place for git repos', async () => {
 })
 
 test('applyUpdate prefers the stable repo path for non-git installs', async () => {
-  const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'wsl-voice-terminal-'))
+  const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pi-voice-terminal-'))
   const calls = []
 
   await fs.promises.writeFile(path.join(baseDir, 'install.ps1'), '# install\n', 'utf8')

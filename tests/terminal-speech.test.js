@@ -180,7 +180,7 @@ test('extractSpeechText ignores background terminal status chrome', () => {
 
 test('extractSpeechText ignores bare filenames and long ls permission lines', () => {
   const input = [
-    'wsl-voice-terminal-runtime',
+    'pi-voice-terminal-runtime',
     '',
     'rwxrwxrwx 1 notsolikely notsolikely 209 Mar 8 14:32 /mnt/c/Users/peter/voice_terminal_demo.py',
     '',

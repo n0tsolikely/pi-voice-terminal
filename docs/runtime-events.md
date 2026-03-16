@@ -2,7 +2,7 @@
 
 This project writes JSONL runtime logs into a sibling runtime directory:
 
-- `wsl-voice-terminal-runtime/latest.jsonl`
+- `pi-voice-terminal-runtime/latest.jsonl`
 
 Use this file to debug real behavior on Windows.
 

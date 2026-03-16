@@ -1,11 +1,11 @@
 (function bootstrap() {
   const api = window.terminalAPI
-  const micStateApi = window.WslVoiceTerminalMicState
-  const dictationApi = window.WslVoiceTerminalDictationBuffer
-  const autoSpeechFilterApi = window.WslVoiceTerminalAutoSpeechFilter || null
-  const replyHistoryUiApi = window.WslVoiceTerminalReplyHistoryUi
-  const vaporizeApi = window.WslVoiceTerminalVaporize || null
-  const voiceControlsUiApi = window.WslVoiceTerminalVoiceControlsUi
+  const micStateApi = window.PiVoiceTerminalMicState
+  const dictationApi = window.PiVoiceTerminalDictationBuffer
+  const autoSpeechFilterApi = window.PiVoiceTerminalAutoSpeechFilter || null
+  const replyHistoryUiApi = window.PiVoiceTerminalReplyHistoryUi
+  const vaporizeApi = window.PiVoiceTerminalVaporize || null
+  const voiceControlsUiApi = window.PiVoiceTerminalVoiceControlsUi
   const terminalShellElement = document.getElementById('terminalShell')
   const overlayElement = document.getElementById('overlay')
   const terminalElement = document.getElementById('terminal')
@@ -89,7 +89,7 @@
   const REPLY_HISTORY_AUTO_HIDE_MS = 7000
   const STATUS_NOTICE_MS = 5000
   const TRANSCRIPTION_WATCHDOG_MS = 20000
-  const AUTO_REPLY_SPEECH_STORAGE_KEY = 'wsl-voice-terminal.auto-reply-speech-enabled'
+  const AUTO_REPLY_SPEECH_STORAGE_KEY = 'pi-voice-terminal.auto-reply-speech-enabled'
   const BUSY_PHASES = new Set([
     MIC_PHASES.RECORDING,
     MIC_PHASES.STOPPING,

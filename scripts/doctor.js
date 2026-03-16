@@ -28,7 +28,7 @@ function findRepoRoot(startDir) {
     if (fs.existsSync(candidate)) {
       try {
         const pkg = JSON.parse(fs.readFileSync(candidate, 'utf8'))
-        if (pkg.name === 'wsl-voice-terminal') {
+        if (pkg.name === 'pi-voice-terminal') {
           return dir
         }
       } catch {
@@ -267,12 +267,12 @@ if (!envKey) {
   log('OK', 'OPENAI_API_KEY present')
 }
 
-const launchBat = path.join(repoRoot, 'launch-wsl-voice-terminal.bat')
+const launchBat = path.join(repoRoot, 'launch-pi-voice-terminal.bat')
 if (fs.existsSync(launchBat)) {
-  log('OK', 'launch-wsl-voice-terminal.bat found')
+  log('OK', 'launch-pi-voice-terminal.bat found')
 } else {
   warnCount += 1
-  log('WARN', 'launch-wsl-voice-terminal.bat missing')
+  log('WARN', 'launch-pi-voice-terminal.bat missing')
 }
 
 const nodeModulesPath = path.join(repoRoot, 'node_modules')

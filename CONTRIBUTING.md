@@ -3,7 +3,7 @@
 ## Ground Rules
 
 - Keep the app Windows-first.
-- Do not break `launch-wsl-voice-terminal.bat`.
+- Do not break `launch-pi-voice-terminal.bat`.
 - Do not remove `node-pty`.
 - Prefer small, testable changes over broad rewrites.
 - Preserve the terminal-first workflow. This project is not trying to become a chat UI.
@@ -42,13 +42,13 @@
 4. Run tests:
    - `npm test`
 5. Launch on Windows:
-   - `launch-wsl-voice-terminal.bat`
+   - `launch-pi-voice-terminal.bat`
 
 ## Debugging Workflow
 
 Use the runtime logs:
 
-- `wsl-voice-terminal-runtime/latest.jsonl`
+- `pi-voice-terminal-runtime/latest.jsonl`
 
 Start with:
 

@@ -11,7 +11,7 @@ This file documents common wrong assumptions that AI tools or new contributors m
   False. Git work may happen in WSL, but the actual app runtime is the Windows Electron app.
 
 - `The runtime logs live inside the repo.`
-  False. They are written to a sibling folder named `wsl-voice-terminal-runtime`.
+  False. They are written to a sibling folder named `pi-voice-terminal-runtime`.
 
 - `Speech replay is just TTS of whatever appears in the terminal.`
   False. The app tries to isolate assistant replies and avoid tool chatter, shell prompts, and user echo.
@@ -26,7 +26,7 @@ This file documents common wrong assumptions that AI tools or new contributors m
   False. OpenAI improves STT/TTS, but local Whisper and local Windows TTS can be used as fallbacks.
 
 - `The launch batch file might redirect to another hidden install by default.`
-  False. `launch-wsl-voice-terminal.bat` launches the repo folder it lives in.
+  False. `launch-pi-voice-terminal.bat` launches the repo folder it lives in.
 
 - `Reply bubbles are just decorative UI.`
   False. They are part of the response replay system and allow replaying spoken agent replies.

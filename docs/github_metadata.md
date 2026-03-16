@@ -10,7 +10,7 @@ Talk to your WSL terminal like a terminal, not a chat app.
 
 ## Suggested Elevator Pitch
 
-WSL Voice Terminal keeps the normal terminal workflow but adds microphone input, response replay, and runtime diagnostics so Codex or Claude Code can be used hands-free without losing the real shell.
+Pi Voice Terminal keeps the normal terminal workflow but adds microphone input, response replay, and runtime diagnostics so Codex or Claude Code can be used hands-free without losing the real shell.
 
 ## Suggested Topics
 

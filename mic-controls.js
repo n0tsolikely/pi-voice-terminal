@@ -2,7 +2,7 @@
   const micStateApi =
     typeof module !== 'undefined' && module.exports
       ? require('./lib/mic-state')
-      : root.WslVoiceTerminalMicState
+      : root.PiVoiceTerminalMicState
   const { MIC_MODES, getEnterIntentForMicState } = micStateApi
 
   function shouldConsumeEnterForMic({
@@ -40,5 +40,5 @@
     module.exports = api
   }
 
-  root.WslVoiceTerminalMic = api
+  root.PiVoiceTerminalMic = api
 })(typeof globalThis !== 'undefined' ? globalThis : window)

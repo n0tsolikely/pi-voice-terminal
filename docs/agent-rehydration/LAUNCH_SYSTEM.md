@@ -6,22 +6,22 @@ Back to: [REHYDRATION_START_HERE.md](REHYDRATION_START_HERE.md)
 
 Launch path on Windows:
 
-1. `launch-wsl-voice-terminal.bat`
-2. `launch-wsl-voice-terminal.vbs`
-3. hidden re-entry into `launch-wsl-voice-terminal.bat --run-hidden`
+1. `launch-pi-voice-terminal.bat`
+2. `launch-pi-voice-terminal.vbs`
+3. hidden re-entry into `launch-pi-voice-terminal.bat --run-hidden`
 4. `npm start`
 5. Electron app window
 
 ## Why There Are Two Launcher Files
 
-`launch-wsl-voice-terminal.bat`
+`launch-pi-voice-terminal.bat`
 
 - real launcher
 - performs prechecks
 - validates `package.json`, `npm`, and `node_modules`
 - prints visible failures if startup prerequisites are missing
 
-`launch-wsl-voice-terminal.vbs`
+`launch-pi-voice-terminal.vbs`
 
 - exists only to relaunch the batch file without leaving a visible shell window open
 - keeps startup looking cleaner and more premium

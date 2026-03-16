@@ -36,8 +36,8 @@ if not exist "node_modules" (
   exit /b 1
 )
 
-if "%HIDDEN_LAUNCH%"=="0" if exist "launch-wsl-voice-terminal.vbs" (
-  start "" /b wscript.exe "%~dp0launch-wsl-voice-terminal.vbs"
+if "%HIDDEN_LAUNCH%"=="0" if exist "launch-pi-voice-terminal.vbs" (
+  start "" /b wscript.exe "%~dp0launch-pi-voice-terminal.vbs"
   exit /b 0
 )
 
@@ -46,10 +46,10 @@ set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (
   if "%HIDDEN_LAUNCH%"=="1" (
-    powershell -NoProfile -WindowStyle Hidden -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('WSL Voice Terminal exited with code %EXIT_CODE%. Launch it again from the repo folder to inspect startup errors.','WSL Voice Terminal') | Out-Null"
+    powershell -NoProfile -WindowStyle Hidden -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Pi Voice Terminal exited with code %EXIT_CODE%. Launch it again from the repo folder to inspect startup errors.','Pi Voice Terminal') | Out-Null"
   ) else (
     echo.
-    echo WSL Voice Terminal exited with code %EXIT_CODE%.
+    echo Pi Voice Terminal exited with code %EXIT_CODE%.
     pause
   )
 )

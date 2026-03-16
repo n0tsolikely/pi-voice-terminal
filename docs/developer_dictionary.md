@@ -19,7 +19,7 @@ This file maps common developer words and spoken phrases to the concepts used in
 - `developer dictionary`
   `lib/dev-dictionary.js`, the spoken-programming correction layer applied after STT and before terminal injection.
 - `runtime log`
-  The JSONL session logs written into the sibling `wsl-voice-terminal-runtime` folder.
+  The JSONL session logs written into the sibling `pi-voice-terminal-runtime` folder.
 - `doctor`
   `npm run doctor`, the quick local environment and dependency diagnostic.
 

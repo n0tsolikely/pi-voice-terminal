@@ -7,10 +7,10 @@ const path = require('node:path')
 const { RuntimeLogger } = require('../lib/runtime-logger')
 
 test('runtime logger writes both session and latest logs in a sibling runtime directory', async () => {
-  const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'wsl-voice-terminal-'))
+  const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pi-voice-terminal-'))
   const logger = new RuntimeLogger({
     baseDir,
-    runtimeDirName: 'wsl-voice-terminal-runtime-test'
+    runtimeDirName: 'pi-voice-terminal-runtime-test'
   })
 
   const info = logger.getInfo()
@@ -27,7 +27,7 @@ test('runtime logger writes both session and latest logs in a sibling runtime di
     .split('\n')
     .map((line) => JSON.parse(line))
 
-  assert.match(info.runtimeDir, /wsl-voice-terminal-runtime-test$/)
+  assert.match(info.runtimeDir, /pi-voice-terminal-runtime-test$/)
   assert.match(latestLog, /test\.event/)
   assert.match(sessionLog, /runtime\.session_started/)
   assert.match(sessionLog, /hello/)
@@ -36,10 +36,10 @@ test('runtime logger writes both session and latest logs in a sibling runtime di
 })
 
 test('child loggers attach stable context to runtime entries', async () => {
-  const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'wsl-voice-terminal-'))
+  const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pi-voice-terminal-'))
   const logger = new RuntimeLogger({
     baseDir,
-    runtimeDirName: 'wsl-voice-terminal-runtime-test'
+    runtimeDirName: 'pi-voice-terminal-runtime-test'
   })
 
   const contextual = logger.child({

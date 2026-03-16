@@ -2,9 +2,9 @@
 
 Back to: [REHYDRATION_START_HERE.md](REHYDRATION_START_HERE.md)
 
-## What WSL Voice Terminal Is
+## What Pi Voice Terminal Is
 
-WSL Voice Terminal is a Windows-first Electron app that wraps `wsl.exe` and adds voice input/output without replacing real terminal behavior.
+Pi Voice Terminal is a Windows-first Electron app that wraps `wsl.exe` and adds voice input/output without replacing real terminal behavior.
 
 Core characteristics:
 
@@ -61,8 +61,8 @@ The intended experience is:
 
 There are two launch files:
 
-- `launch-wsl-voice-terminal.bat`
-- `launch-wsl-voice-terminal.vbs`
+- `launch-pi-voice-terminal.bat`
+- `launch-pi-voice-terminal.vbs`
 
 The batch file is the actual launcher and precheck script. The VBS wrapper exists only to relaunch the batch file hidden so the intermediate shell window does not sit open.
 
@@ -72,7 +72,7 @@ See: [LAUNCH_SYSTEM.md](LAUNCH_SYSTEM.md)
 
 Runtime logs are written into a sibling directory:
 
-- `wsl-voice-terminal-runtime/latest.jsonl`
+- `pi-voice-terminal-runtime/latest.jsonl`
 
 On Windows, those logs are the ground truth when behavior and assumptions disagree.
 

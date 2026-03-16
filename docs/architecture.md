@@ -2,7 +2,7 @@
 
 ## Purpose
 
-WSL Voice Terminal is a Windows-first Electron wrapper around `wsl.exe` with:
+Pi Voice Terminal is a Windows-first Electron wrapper around `wsl.exe` with:
 
 - a real terminal surface
 - microphone-driven dictation
@@ -99,7 +99,7 @@ What it must avoid:
 
 Runtime logs are written next to the repo in a sibling folder named:
 
-- `wsl-voice-terminal-runtime`
+- `pi-voice-terminal-runtime`
 
 Important event families:
 

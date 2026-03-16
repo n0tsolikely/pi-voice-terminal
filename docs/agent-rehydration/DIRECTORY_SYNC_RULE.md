@@ -6,12 +6,12 @@ Back to: [REHYDRATION_START_HERE.md](REHYDRATION_START_HERE.md)
 
 Linux canonical development repo:
 
-- `/home/notsolikely/wsl-voice-terminal`
+- `/home/notsolikely/pi-voice-terminal`
 
 Windows runtime launch copy:
 
-- `C:\Users\peter\wsl-voice-terminal`
-- mounted in WSL as `/mnt/c/Users/peter/wsl-voice-terminal`
+- `C:\Users\peter\pi-voice-terminal`
+- mounted in WSL as `/mnt/c/Users/peter/pi-voice-terminal`
 
 ## Rule
 

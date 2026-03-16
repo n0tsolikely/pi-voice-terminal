@@ -1,10 +1,10 @@
 {
-  "name": "wsl-voice-terminal",
+  "name": "pi-voice-terminal",
   "version": "0.2.0",
   "private": true,
   "author": "Peter J. Reynolds (notsolikely)",
   "license": "MIT",
-  "description": "Electron terminal wrapper for WSL with press-to-talk input and Codex-focused TTS output.",
+  "description": "Electron terminal wrapper for Raspberry Pi OS / Debian ARM Linux with press-to-talk input and Codex-focused TTS output.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

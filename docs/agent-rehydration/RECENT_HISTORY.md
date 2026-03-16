@@ -53,7 +53,7 @@ Problem:
 
 What changed:
 
-- `launch-wsl-voice-terminal.vbs` was added as a hidden handoff wrapper around `launch-wsl-voice-terminal.bat`.
+- `launch-pi-voice-terminal.vbs` was added as a hidden handoff wrapper around `launch-pi-voice-terminal.bat`.
 
 Why it mattered:
 

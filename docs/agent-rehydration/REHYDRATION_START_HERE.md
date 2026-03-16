@@ -1,6 +1,6 @@
 # Codex Rehydration Pack
 
-This is the operator briefing for future Codex sessions working on WSL Voice Terminal.
+This is the operator briefing for future Codex sessions working on Pi Voice Terminal.
 
 Read this entire pack before changing code:
 
@@ -14,7 +14,7 @@ Read this entire pack before changing code:
 
 ## What This Repo Is
 
-WSL Voice Terminal is a Windows-first Electron wrapper around `wsl.exe` with:
+Pi Voice Terminal is a Windows-first Electron wrapper around `wsl.exe` with:
 
 - a real PTY-backed terminal
 - microphone-driven dictation
@@ -27,11 +27,11 @@ WSL Voice Terminal is a Windows-first Electron wrapper around `wsl.exe` with:
 
 This Linux repository is the canonical codebase:
 
-- `/home/notsolikely/wsl-voice-terminal`
+- `/home/notsolikely/pi-voice-terminal`
 
 The Windows launch copy is a mirror used for real launches and runtime verification:
 
-- `C:\Users\peter\wsl-voice-terminal`
+- `C:\Users\peter\pi-voice-terminal`
 
 Do not treat the Windows copy as the git source of truth. Changes should land in the Linux repo, be pushed to GitHub `main`, then be mirrored to Windows.
 

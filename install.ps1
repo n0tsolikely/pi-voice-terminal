@@ -9,8 +9,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$RepoName = 'wsl-voice-terminal'
-$ExpectedRepoUrl = 'https://github.com/n0tsolikely/wsl-voice-terminal.git'
+$RepoName = 'pi-voice-terminal'
+$ExpectedRepoUrl = 'https://github.com/n0tsolikely/pi-voice-terminal.git'
 $StableRepoDir = Join-Path $env:USERPROFILE $RepoName
 $Script:WarningCount = 0
 
@@ -80,7 +80,7 @@ function Invoke-Checked {
   }
 }
 
-function Test-WslVoiceTerminalRepo([string]$Path) {
+function Test-PiVoiceTerminalRepo([string]$Path) {
   $packageJsonPath = Join-Path $Path 'package.json'
 
   if (-not (Test-Path $packageJsonPath) -or -not (Test-Path (Join-Path $Path 'main.js'))) {
@@ -586,7 +586,7 @@ function Resolve-RepoDir([string]$WingetPath) {
     Stop-Install 'Stable repo path could not be resolved.'
   }
 
-  if (-not $PreferStableRepo -and (Test-WslVoiceTerminalRepo $currentDir)) {
+  if (-not $PreferStableRepo -and (Test-PiVoiceTerminalRepo $currentDir)) {
     Write-Step 'Checking current working directory'
     Write-Pass "Using current repo directory: $currentDir"
     return $currentDir
@@ -617,7 +617,7 @@ function Resolve-RepoDir([string]$WingetPath) {
     Stop-Install "The repo at $stableRepoDir has no origin remote. Fix the repo manually or remove the folder and rerun install.ps1."
   }
 
-  if ($originUrl -notmatch 'n0tsolikely/wsl-voice-terminal(?:\.git)?$') {
+  if ($originUrl -notmatch 'n0tsolikely/pi-voice-terminal(?:\.git)?$') {
     Stop-Install "The repo at $stableRepoDir points to $originUrl, not $ExpectedRepoUrl. Remove or fix that repo before rerunning install.ps1."
   }
 
@@ -915,13 +915,13 @@ function Launch-App([string]$RepoDir, [bool]$WslReady) {
   }
 
   if (-not $WslReady) {
-    Write-Warn 'WSL Voice Terminal was installed, but launch was skipped because wsl.exe is missing. Run wsl --install in an elevated PowerShell window, reboot if required, then rerun install.ps1.'
+    Write-Warn 'Pi Voice Terminal was installed, but launch was skipped because wsl.exe is missing. Run wsl --install in an elevated PowerShell window, reboot if required, then rerun install.ps1.'
     return
   }
 
-  $launchBat = Join-Path $RepoDir 'launch-wsl-voice-terminal.bat'
+  $launchBat = Join-Path $RepoDir 'launch-pi-voice-terminal.bat'
 
-  Write-Step 'Launching WSL Voice Terminal'
+  Write-Step 'Launching Pi Voice Terminal'
   Push-Location $RepoDir
   try {
     if (Test-Path $launchBat) {
@@ -931,18 +931,18 @@ function Launch-App([string]$RepoDir, [bool]$WslReady) {
       & npm start
       $exitCode = $LASTEXITCODE
     } else {
-      Stop-Install 'No launch-wsl-voice-terminal.bat or npm start script was found.'
+      Stop-Install 'No launch-pi-voice-terminal.bat or npm start script was found.'
     }
   } finally {
     Pop-Location
   }
 
   if ($exitCode -eq 0) {
-    Write-Pass 'WSL Voice Terminal exited cleanly'
+    Write-Pass 'Pi Voice Terminal exited cleanly'
     return
   }
 
-  Stop-Install "WSL Voice Terminal exited with code $exitCode"
+  Stop-Install "Pi Voice Terminal exited with code $exitCode"
 }
 
 if ($env:OS -ne 'Windows_NT') {
@@ -952,7 +952,7 @@ if ($env:OS -ne 'Windows_NT') {
 if ($DoctorOnly) {
   Write-Step 'Doctor mode enabled'
 
-  $doctorRepoDir = if (Test-WslVoiceTerminalRepo (Get-Location).Path) {
+  $doctorRepoDir = if (Test-PiVoiceTerminalRepo (Get-Location).Path) {
     (Get-Location).Path
   } else {
     $StableRepoDir

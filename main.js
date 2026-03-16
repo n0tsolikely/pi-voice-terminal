@@ -99,7 +99,7 @@ function configureWindowsStoragePaths() {
     return
   }
 
-  const appStorageRoot = path.join(localAppData, packageManifest.name || 'wsl-voice-terminal')
+  const appStorageRoot = path.join(localAppData, packageManifest.name || 'pi-voice-terminal')
   const userDataPath = path.join(appStorageRoot, 'User Data')
   const cachePath = path.join(appStorageRoot, 'Cache')
 
@@ -288,7 +288,7 @@ app.whenReady().then(() => {
       currentLabel: activeUpdateInfo.currentLabel,
       latestLabel: activeUpdateInfo.latestLabel
     })
-    sendStatus('Updating WSL Voice Terminal. The app will restart when it finishes.')
+    sendStatus('Updating Pi Voice Terminal. The app will restart when it finishes.')
 
     try {
       const result = await appUpdater.applyUpdate()
@@ -598,7 +598,7 @@ function sendStatus(message) {
 
 function launchStableInstall(launchScriptPath, workingDirectory) {
   if (!launchScriptPath) {
-    throw new Error('launch-wsl-voice-terminal.bat is missing after the update.')
+    throw new Error('launch-pi-voice-terminal.bat is missing after the update.')
   }
 
   const child = spawn(

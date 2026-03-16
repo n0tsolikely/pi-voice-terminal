@@ -1,4 +1,4 @@
-# WSL Voice Terminal
+# Pi Voice Terminal
 
 Windows-first Electron wrapper around `wsl.exe` with a real terminal, mic-driven dictation, and spoken assistant replies.
 
@@ -32,7 +32,7 @@ Saved-script install is the default recommendation.
 It is more transparent and less likely to trip antivirus heuristics than piping a remote script directly into PowerShell.
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/n0tsolikely/wsl-voice-terminal/main/install.ps1 -OutFile .\install.ps1
+Invoke-WebRequest https://raw.githubusercontent.com/n0tsolikely/pi-voice-terminal/main/install.ps1 -OutFile .\install.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
@@ -41,14 +41,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 This is convenient but can trigger antivirus heuristics because it pipes a remote script directly into PowerShell.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/n0tsolikely/wsl-voice-terminal/main/install.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/n0tsolikely/pi-voice-terminal/main/install.ps1 | iex"
 ```
 
 ## What the Installer Does
 
 - checks for `winget`
 - installs `Git`, `Node.js LTS`, and `Python 3.11` if they are missing
-- clones or updates the repo into `%USERPROFILE%\wsl-voice-terminal` when run outside the repo
+- clones or updates the repo into `%USERPROFILE%\pi-voice-terminal` when run outside the repo
 - runs `npm install`
 - tries `npm run rebuild:native` if native dependencies fail
 - creates `.env` from `.env.example` if needed
@@ -60,7 +60,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 1. `npm install`
 2. Copy `.env.example` to `.env` if you want to set an OpenAI key, choose a TTS provider, or tweak local whisper settings
 3. Optional: `npm run install:local-whisper` if you want to prewarm local Whisper before the first launch
-4. Run `launch-wsl-voice-terminal.bat`
+4. Run `launch-pi-voice-terminal.bat`
 
 ## Developer Commands
 
@@ -79,7 +79,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 
 - `install.ps1`: bootstrapper and setup
 - `scripts/doctor.js`: diagnostics (`npm run doctor`)
-- `launch-wsl-voice-terminal.bat`: app launcher
+- `launch-pi-voice-terminal.bat`: app launcher
 
 ## Architecture At A Glance
 
@@ -132,7 +132,7 @@ The system is designed to speak the assistant reply, not shell prompts, tool out
 
 Live debugging uses JSONL runtime logs written to a sibling folder:
 
-- `wsl-voice-terminal-runtime/latest.jsonl`
+- `pi-voice-terminal-runtime/latest.jsonl`
 
 Useful commands:
 
@@ -153,7 +153,7 @@ See [docs/media/README.md](docs/media/README.md) for the suggested asset list.
 
 ## Updates
 
-There is no auto-updater yet. To update, rerun `install.ps1` or `git pull` your repo. The installer will `git pull` the stable repo at `%USERPROFILE%\wsl-voice-terminal` when it is clean.
+There is no auto-updater yet. To update, rerun `install.ps1` or `git pull` your repo. The installer will `git pull` the stable repo at `%USERPROFILE%\pi-voice-terminal` when it is clean.
 
 ## Distribution Note
 
@@ -193,7 +193,7 @@ Future distribution should prefer a signed installer or a signed PowerShell scri
 ### Runtime debugging
 
 - Run `npm run doctor` first.
-- Check `wsl-voice-terminal-runtime/latest.jsonl`.
+- Check `pi-voice-terminal-runtime/latest.jsonl`.
 - For speech issues, inspect:
   - `speech.finalized`
   - `speech.audio`
@@ -207,7 +207,7 @@ Future distribution should prefer a signed installer or a signed PowerShell scri
 
 ### WSL is missing
 
-- WSL Voice Terminal needs `wsl.exe`.
+- Pi Voice Terminal needs `wsl.exe`.
 - In an elevated Windows PowerShell window, run:
 
 ```powershell
