@@ -29,20 +29,51 @@ It does not depend on WSL, `wsl.exe`, PowerShell, or Windows speech APIs.
 
 ## Prerequisites
 
+For the one-shot installer:
+
+- Raspberry Pi OS or Debian Linux
+- `sudo`
+- internet access
+- `curl`
+
+The installer and `npm run setup:raspi` provision the rest, including:
+
 - `git`
 - `node` and `npm`
 - `python3` with `venv`
 - ALSA capture/playback tools: `arecord`, `aplay`
 - `ffmpeg`
 - `espeak-ng`
-- PulseAudio or PipeWire session support is recommended for desktop microphone access
 
 `npm run setup:raspi` installs the system packages this repo expects and provisions the local Vosk runtime.
 
 ## Install
 
+Recommended one-shot install from anywhere:
+
 ```bash
-git clone git@github.com:n0tsolikely/pi-voice-terminal.git
+curl -fsSL https://raw.githubusercontent.com/n0tsolikely/pi-voice-terminal/main/install.sh | bash
+```
+
+Safer saved-script variant:
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/n0tsolikely/pi-voice-terminal/main/install.sh
+bash install.sh
+```
+
+That installer:
+
+- clones or updates the repo into `$HOME/pi-voice-terminal`
+- runs the Raspberry Pi setup flow
+- installs system packages and app dependencies
+- downloads the default Vosk model
+- launches the app
+
+Repo-local install still works too:
+
+```bash
+git clone https://github.com/n0tsolikely/pi-voice-terminal.git
 cd pi-voice-terminal
 npm run setup:raspi
 npm run run
